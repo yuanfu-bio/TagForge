@@ -324,6 +324,8 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     totals = {"total_reads": 0, "extracted_reads": 0}
     segment_counters = {segment.name: Counter() for segment in config.segments}
     previous_elapsed = 0.0
+    last_input_fraction = 0.0
+    resume_fraction_known = True
     fingerprint = _resume_fingerprint(config, sample)
 
     def save_resume():
@@ -333,6 +335,7 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             "extracted_reads": totals["extracted_reads"],
             "safe_output_bytes": tmp_output.stat().st_size,
             "elapsed_seconds": previous_elapsed + time.monotonic() - started,
+            "input_fraction": last_input_fraction,
             "parallel_backend": totals.get("parallel_backend", "unknown"),
             "segment_counters": {name: dict(counter) for name, counter in segment_counters.items()},
         }
@@ -355,6 +358,8 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         totals["total_reads"] = int(state["reads_completed"])
         totals["extracted_reads"] = int(state["extracted_reads"])
         previous_elapsed = float(state.get("elapsed_seconds", 0.0))
+        resume_fraction_known = "input_fraction" in state
+        last_input_fraction = float(state.get("input_fraction", 0.0))
         for name, values in state.get("segment_counters", {}).items():
             if name in segment_counters:
                 segment_counters[name].update(values)
@@ -372,30 +377,36 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         save_resume()
     progress_fields = [
         "status", "reads_completed", "input_percent", "elapsed_seconds",
-        "reads_per_second", "eta_seconds", "estimated_finish", "output_tmp_bytes",
+        "reads_per_second", "eta_seconds", "estimated_finish", "resume_skip_percent",
+        "output_tmp_bytes",
     ]
 
-    def update_progress(status: str, input_fraction: float):
+    def update_progress(status: str, input_fraction: float | None, resume_skip: float | None = None):
         elapsed = previous_elapsed + time.monotonic() - started
         rate = totals["total_reads"] / elapsed if elapsed else 0.0
-        eta = elapsed * (1.0 - input_fraction) / input_fraction if 0 < input_fraction < 1 else 0.0
+        eta = (
+            elapsed * (1.0 - input_fraction) / input_fraction
+            if input_fraction is not None and 0 < input_fraction < 1 else 0.0
+        )
         finish = (
             (datetime.now().astimezone() + timedelta(seconds=eta)).isoformat(timespec="seconds")
             if eta else ""
         )
         row = {
             "status": status, "reads_completed": totals["total_reads"],
-            "input_percent": f"{input_fraction * 100:.2f}",
+            "input_percent": f"{input_fraction * 100:.2f}" if input_fraction is not None else "NA",
             "elapsed_seconds": f"{elapsed:.2f}", "reads_per_second": f"{rate:.2f}",
             "eta_seconds": f"{eta:.2f}" if eta else "", "estimated_finish": finish,
+            "resume_skip_percent": f"{resume_skip * 100:.2f}" if resume_skip is not None else "",
             "output_tmp_bytes": tmp_output.stat().st_size if tmp_output.exists() else 0,
         }
         write_tsv(progress_output, progress_fields, [row])
         logger.info(
             "extract_progress\treads=%s\tinput_percent=%s\treads_per_second=%s\t"
-            "eta_seconds=%s\testimated_finish=%s\tstatus=%s",
+            "eta_seconds=%s\testimated_finish=%s\tresume_skip_percent=%s\tstatus=%s",
             row["reads_completed"], row["input_percent"], row["reads_per_second"],
-            row["eta_seconds"] or "NA", row["estimated_finish"] or "NA", status,
+            row["eta_seconds"] or "NA", row["estimated_finish"] or "NA",
+            row["resume_skip_percent"] or "NA", status,
         )
         if status == "running":
             eta_text = f"{row['eta_seconds']}s" if row["eta_seconds"] else "NA"
@@ -424,7 +435,11 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             except (PermissionError, NotImplementedError):
                 executor = ThreadPoolExecutor(max_workers=config.threads)
                 totals["parallel_backend"] = "thread"
-        update_progress("resuming" if resumed else "running", 0.0)
+        update_progress(
+            "resuming" if resumed else "running",
+            last_input_fraction if (not resumed or resume_fraction_known) else None,
+            0.0 if resumed else None,
+        )
         reads_to_skip = totals["total_reads"]
         reads_seen = 0
         for batch, input_fraction in paired_fastq_batches(
@@ -434,7 +449,15 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                 remaining = reads_to_skip - reads_seen
                 if remaining >= len(batch):
                     reads_seen += len(batch)
-                    update_progress("resuming", input_fraction)
+                    skip_fraction = min(1.0, reads_seen / reads_to_skip) if reads_to_skip else 1.0
+                    if reads_seen >= reads_to_skip:
+                        last_input_fraction = max(last_input_fraction, input_fraction)
+                        resume_fraction_known = True
+                    update_progress(
+                        "resuming",
+                        last_input_fraction if resume_fraction_known else None,
+                        skip_fraction,
+                    )
                     continue
                 batch = batch[remaining:]
                 reads_seen += remaining
@@ -494,8 +517,9 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                     if totals["total_reads"] <= config.extraction_preview_reads:
                         preview_writer.writerow(row)
             preview_handle.flush()
+            last_input_fraction = max(last_input_fraction, input_fraction)
             save_resume()
-            update_progress("running", input_fraction)
+            update_progress("running", last_input_fraction)
         os.replace(tmp_output, output)
         resume_path.unlink(missing_ok=True)
         update_progress("completed", 1.0)

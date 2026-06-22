@@ -162,6 +162,10 @@ input file metadata; truncates `.tmp` to the last committed byte; restores
 counters; rapidly skips already completed FASTQ pairs without linker matching;
 and continues with the next batch. At most one unfinished batch is repeated.
 Use `--overwrite` to discard a resume point and restart extraction intentionally.
+During fast-forward, `input_percent` remains at the last committed extraction
+position and `resume_skip_percent` reports progress toward that position; the
+overall percentage never moves backward. Older 0.1.6 manifests without a saved
+input fraction show `input_percent=NA` until fast-forward reaches the checkpoint.
 
 Barcode segments can have independent whitelist and correction controls:
 

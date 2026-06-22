@@ -11,6 +11,8 @@ version. The version is kept in package metadata, the CLI, and pipeline logs.
 - Resume truncates any uncommitted gzip tail, rapidly skips completed FASTQ
   pairs without Cutadapt work, and continues from the next batch.
 - `--overwrite` explicitly discards extraction resume state and starts over.
+- Preserve committed input percentage across resume and report fast-forward
+  progress separately, preventing percentage regression and invalid ETA values.
 
 ## 0.1.5 — 2026-06-22
 
