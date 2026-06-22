@@ -22,7 +22,9 @@ records = [
 
 for mate in (1, 2):
     path = ROOT / f"example_raw_{mate}.fq.gz"
-    with gzip.open(path, "wt", encoding="ascii", compresslevel=6) as handle:
-        for name, r1, r2 in records:
-            sequence = r1 if mate == 1 else r2
-            handle.write(f"@{name}/{mate}\n{sequence}\n+\n{'I' * len(sequence)}\n")
+    chunks = []
+    for name, r1, r2 in records:
+        sequence = r1 if mate == 1 else r2
+        chunks.append(f"@{name}/{mate}\n{sequence}\n+\n{'I' * len(sequence)}\n")
+    # A fixed gzip timestamp keeps the tracked tiny fixtures reproducible.
+    path.write_bytes(gzip.compress("".join(chunks).encode("ascii"), compresslevel=6, mtime=0))

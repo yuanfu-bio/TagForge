@@ -50,12 +50,15 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
     checkpoint = dirs["checkpoint"] / f"{step}.done"
     outputs = expected_outputs(config, sample, step)
     overwrite = overwrite or config.overwrite
-    if step_complete(checkpoint, outputs, overwrite):
+    if step_complete(checkpoint, outputs, overwrite, __version__):
         logger.info("%s\tskipped_checkpoint\telapsed_time=0", step)
         return outputs, "skipped"
     start = time.monotonic(); logger.info("%s\tstart\telapsed_time=0", step)
     try:
-        result = STEP_FUNCS[step](config, sample)
+        result = (
+            extract_sample(config, sample, resume=not overwrite)
+            if step == "extract" else STEP_FUNCS[step](config, sample)
+        )
         if step == "extract" and isinstance(result, tuple) and isinstance(result[1], dict):
             summary = result[1]
             logger.info(
@@ -108,7 +111,7 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
                 )
         if not all(path.is_file() and path.stat().st_size > 0 for path in outputs):
             raise RuntimeError(f"Step {step} did not create all expected outputs")
-        touch_checkpoint(checkpoint)
+        touch_checkpoint(checkpoint, __version__)
         logger.info("%s\tfinish\telapsed_time=%.3f", step, time.monotonic() - start)
         return result, "completed"
     except Exception:

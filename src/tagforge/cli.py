@@ -76,7 +76,8 @@ quick_test:
   reads: 10000
 performance:
   threads: 2
-  chunk_size: 100000
+  chunk_size: 10000
+  extraction_preview_reads: 1000
   compression_level: 3
 resume:
   enabled: true

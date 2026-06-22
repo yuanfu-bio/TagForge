@@ -129,9 +129,39 @@ The equivalent compact form is to provide `start` and linker fields together;
 TagForge infers the fallback mode even when `method` contains only one name.
 `method: linker_fixed`, `method: linker+fixed`, and
 `methods: [linker, fixed]` are also accepted explicitly.
-The extracted read-detail file includes `segment_extraction_methods`, a JSON
-mapping that records whether each segment used `linker`, `fixed` fallback, or
-`failed`, making fallback rates directly auditable.
+The extracted read-detail table has seven compact columns:
+`read_id`, `barcode1_segments`, `barcode2_segments`, `umi_segments`, `methods`,
+`status`, and `failure_reason`. Segment sequences are comma-separated in
+configuration order; `methods` uses one code per configured segment (`L` =
+linker, `F` = fixed, `X` = failed). Combined raw-barcode duplicates, JSON
+syntax, repeated segment names, and repeated method words are not stored.
+Extracted tables from earlier versions are intentionally rejected: rerun
+`tagforge extract --overwrite` after upgrading. Checkpoints include the TagForge
+version so an older checkpoint cannot silently bypass the new extraction step.
+
+Extraction streams to `{sample}.extracted.tsv.gz.tmp` in bounded batches; the
+`.tmp` suffix means "incomplete", not "held in memory". Each batch is flushed
+to disk, and only the configured batch plus worker data stays in memory. On
+success the temporary gzip is atomically renamed. `performance.chunk_size`
+controls the memory/throughput tradeoff (default: 10,000 read pairs).
+
+During extraction, the first rows are immediately readable from
+`02_extracted/{sample}.extracted.preview.tsv` (1,000 by default, controlled by
+`performance.extraction_preview_reads`). Live status is written to
+`00_logs/{sample}.extraction_progress.tsv` and printed/logged after every batch:
+completed reads, approximate compressed-input percentage, speed, ETA,
+estimated finish, and current `.tmp` size. Percentage and ETA are estimates
+based on physical compressed bytes consumed, so gzip read-ahead and variable
+compression can cause small fluctuations. A non-final batch is never displayed
+as 100%; only confirmed end-of-file reports 100%.
+
+Every completed extraction batch is closed as a valid gzip member and committed
+to `01_checkpoint/{sample}.extract.resume.json`. If a run is interrupted,
+rerunning the same command validates the TagForge version, configuration, and
+input file metadata; truncates `.tmp` to the last committed byte; restores
+counters; rapidly skips already completed FASTQ pairs without linker matching;
+and continues with the next batch. At most one unfinished batch is repeated.
+Use `--overwrite` to discard a resume point and restart extraction intentionally.
 
 Barcode segments can have independent whitelist and correction controls:
 
@@ -149,6 +179,14 @@ Candidates are scored by operation count and total edit distance. A tied best
 result pointing to multiple whitelist entries is marked ambiguous and rejected.
 Raw, shifted, and final sequences remain in the trace. Multiple segments of a
 target are concatenated in configuration order.
+
+For fixed extraction, `max_shift` reserves bases on both sides of the configured
+interval. With `start: 16`, `length: 8`, and `max_shift: 1`, extraction retains
+`read[15:25]`. Correction tests the configured interval first (`raw[1:9]`), then
+the left (`raw[0:8]`, shift `-1`) and right (`raw[2:10]`, shift `+1`) candidates.
+The signed distance is preserved in the correction trace; aggregate statistics
+also report left and right shift counts separately. Linker-derived barcodes are
+already delimited and therefore do not receive positional shifting.
 
 `FB_info.tsv` must contain the configured ID, sequence, and antibody-name
 columns. FB sequences must be unique. Antibody names must also be unique unless
@@ -239,10 +277,10 @@ with the identical deterministic seed.
 
 ## Resume, logs, and failure behavior
 
-A checkpoint is atomically written only after all expected stage outputs exist
-and are non-empty. A later run skips that stage when both its checkpoint and
-outputs remain present. Important outputs are first written with a `.tmp`
-suffix and atomically renamed.
+A versioned checkpoint is atomically written only after all expected stage
+outputs exist and are non-empty. A later run skips that stage only when the
+checkpoint version matches and all outputs remain present. Important outputs
+are first written with a `.tmp` suffix and atomically renamed.
 
 Failures include sample and stage context in
 `00_logs/{sample}.pipeline.log`. Configuration validation catches missing
@@ -254,8 +292,9 @@ matching read IDs.
 ## Performance tuning
 
 - Put `08_tmp` on fast local storage when processing large libraries.
-- Increase `performance.chunk_size` to reduce SQLite transaction overhead when
-  memory permits.
+- Increase `performance.chunk_size` to reduce extraction scheduling overhead
+  when memory permits; lower it to tighten the extraction memory bound and
+  receive more frequent progress updates.
 - Lower `compression_level` for faster output on compute-heavy runs.
 - Disable the large correction trace with `output.correction_trace: false`.
 - Split samples into separate Slurm jobs with `make-slurm`.

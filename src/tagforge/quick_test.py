@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import json
 import time
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +10,7 @@ from . import __version__
 from .barcode_correct import WhitelistCorrector, load_fb_annotation, load_whitelist
 from .config import ConfigError, TagForgeConfig
 from .external_tools import check_external_tools
-from .extract import _extract_record
+from .extract import _extract_record, decode_method_payload, decode_segment_payload
 from .fastq import paired_fastq
 from .io_utils import atomic_text, sample_dirs, write_tsv
 from .logging_utils import sample_logger
@@ -100,11 +99,17 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
             totals["n_bases"] += seq_stats["n_bases"]
             r1_lengths[seq_stats["r1_length"]] += 1
             r2_lengths[seq_stats["r2_length"]] += 1
-            raw_by_target = {
-                "barcode1": json.loads(row["barcode1_segment_raw_values"]),
-                "barcode2": json.loads(row["barcode2_segment_raw_values"]),
-                "umi": json.loads(row["umi_segment_raw_values"]),
+            segments_by_target = {
+                target: [s for s in config.segments if s.target == target]
+                for target in ("barcode1", "barcode2", "umi")
             }
+            raw_by_target = {
+                target: decode_segment_payload(row[f"{target}_segments"], segments_by_target[target])
+                for target in ("barcode1", "barcode2", "umi")
+            }
+            extraction_methods = decode_method_payload(
+                row["methods"], config.segments
+            )
             corrected_by_target = {"barcode1": [], "barcode2": []}
             for segment in config.segments:
                 count = segment_counts[segment.name]
@@ -122,7 +127,16 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
                 if stat["linker_candidate_pairs"] > 1: count["multiple_pairs"] += 1
                 count["cutadapt_microseconds"] += round(stat["linker_elapsed_seconds"] * 1_000_000)
                 if segment.target != "umi":
-                    correction = correctors[segment.name].correct(raw_by_target[segment.target].get(segment.name, ""))
+                    source_method = extraction_methods.get(segment.name, "unknown")
+                    extra = (
+                        segment.correction.max_shift
+                        if source_method == "fixed" and segment.correction.enabled
+                        and segment.correction.allow_shift else 0
+                    )
+                    anchor = min(extra, segment.start or 0) if source_method == "fixed" else 0
+                    correction = correctors[segment.name].correct(
+                        raw_by_target[segment.target].get(segment.name, ""), anchor
+                    )
                     count["barcode_valid"] += int(correction.success)
                     count[f"correction_{correction.correction_type}"] += 1
                     corrected_by_target[segment.target].append(correction.corrected_sequence)

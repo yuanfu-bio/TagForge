@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import csv
+import gzip
+import hashlib
+import json
+import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from collections import Counter
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from functools import lru_cache
 from itertools import repeat
 import time
 from typing import Optional
 
-from .config import SegmentConfig, TagForgeConfig
-from .fastq import paired_fastq
-from .io_utils import atomic_text, json_compact, sample_dirs, write_tsv
+from . import __version__
+from .config import ConfigError, SegmentConfig, TagForgeConfig
+from .fastq import paired_fastq_batches
+from .io_utils import atomic_text, sample_dirs, write_tsv
+from .logging_utils import sample_logger
 
 
 @dataclass(frozen=True)
@@ -96,8 +103,11 @@ def _extract_fixed(sequence: str, segment: SegmentConfig, extra: int) -> Segment
             f"coordinate_out_of_range:{segment.start}:{required_end}",
             "fixed",
         )
-    end = min(len(sequence), required_end + extra)
-    return SegmentExtractionResult(segment.name, sequence[segment.start:end], True, extraction_method="fixed")
+    window_start = max(0, segment.start - extra)
+    window_end = min(len(sequence), required_end + extra)
+    return SegmentExtractionResult(
+        segment.name, sequence[window_start:window_end], True, extraction_method="fixed"
+    )
 
 
 def _extract_linker_impl(sequence: str, segment: SegmentConfig) -> SegmentExtractionResult:
@@ -204,10 +214,10 @@ def extract_segment(sequence: str, segment: SegmentConfig) -> SegmentExtractionR
     )
 
 
-EXTRACT_FIELDS = ["read_id", "raw_barcode1", "raw_barcode2", "raw_umi",
-                  "barcode1_segment_raw_values", "barcode2_segment_raw_values",
-                  "umi_segment_raw_values", "segment_extraction_methods",
-                  "extraction_status", "failure_reason"]
+EXTRACT_FIELDS = [
+    "read_id", "barcode1_segments", "barcode2_segments", "umi_segments",
+    "methods", "status", "failure_reason",
+]
 
 EXTRACTION_STATS_FIELDS = [
     "sample", "segment", "target", "read", "configured_mode", "total_reads",
@@ -247,92 +257,256 @@ def _extract_record(record, segments):
     valid = not failures
     row = {
         "read_id": record.read_id,
-        "raw_barcode1": "".join(by_target["barcode1"].values()),
-        "raw_barcode2": "".join(by_target["barcode2"].values()),
-        "raw_umi": "".join(by_target["umi"].values()),
-        "barcode1_segment_raw_values": json_compact(by_target["barcode1"]),
-        "barcode2_segment_raw_values": json_compact(by_target["barcode2"]),
-        "umi_segment_raw_values": json_compact(by_target["umi"]),
-        "segment_extraction_methods": json_compact(methods),
-        "extraction_status": "success" if valid else "failed",
+        # Comma-separated segment values and method codes follow config order.
+        # DNA/IUPAC sequences cannot contain commas, so JSON adds no value here.
+        "barcode1_segments": ",".join(by_target["barcode1"].values()),
+        "barcode2_segments": ",".join(by_target["barcode2"].values()),
+        "umi_segments": ",".join(by_target["umi"].values()),
+        "methods": "".join(
+            {"fixed": "F", "linker": "L", "failed": "X"}.get(method, "?")
+            for method in methods.values()
+        ),
+        "status": "success" if valid else "failed",
         "failure_reason": ";".join(failures),
     }
     return row, runtime_stats
 
 
-def extract_sample(config: TagForgeConfig, sample_name: str):
+def decode_segment_payload(payload: str, segments) -> dict[str, str]:
+    """Decode comma-separated segment sequences in configuration order."""
+    if any(marker in payload for marker in '{}[]"'):
+        raise ValueError(
+            "Legacy JSON segment payload is unsupported; rerun 'tagforge extract --overwrite'"
+        )
+    values = payload.split(",")
+    if len(values) != len(segments):
+        raise ValueError(
+            f"Segment payload length mismatch: expected {len(segments)}, found {len(values)}"
+        )
+    return {segment.name: value for segment, value in zip(segments, values)}
+
+
+def decode_method_payload(payload: str, segments) -> dict[str, str]:
+    """Decode compact F/L/X codes in configuration order."""
+    stripped = (payload or "").strip()
+    if len(stripped) != len(segments):
+        raise ValueError(
+            f"Extraction-method payload length mismatch: expected {len(segments)}, "
+            f"found {len(stripped)}"
+        )
+    names = {"F": "fixed", "L": "linker", "X": "failed", "?": "unknown"}
+    unknown = sorted(set(stripped) - set(names))
+    if unknown:
+        raise ValueError(f"Unknown extraction method code(s): {', '.join(unknown)}")
+    return {segment.name: names[code] for segment, code in zip(segments, stripped)}
+
+
+def _resume_fingerprint(config: TagForgeConfig, sample) -> str:
+    digest = hashlib.sha256()
+    digest.update(config.path.read_bytes())
+    for path in (sample.r1, sample.r2):
+        stat = path.stat()
+        digest.update(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode())
+    return digest.hexdigest()
+
+
+def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True):
     sample = config.sample(sample_name)
     dirs = sample_dirs(config.output_dir, sample_name)
     output = dirs["extracted"] / f"{sample_name}.extracted.tsv.gz"
     stats_output = dirs["extracted"] / f"{sample_name}.extraction_stats.tsv"
+    preview_output = dirs["extracted"] / f"{sample_name}.extracted.preview.tsv"
+    progress_output = dirs["logs"] / f"{sample_name}.extraction_progress.tsv"
+    resume_path = dirs["checkpoint"] / f"{sample_name}.extract.resume.json"
+    tmp_output = output.with_name(output.name + ".tmp")
+    logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
     started = time.monotonic()
     totals = {"total_reads": 0, "extracted_reads": 0}
     segment_counters = {segment.name: Counter() for segment in config.segments}
-    with atomic_text(output, config.compression_level) as handle:
-        writer = csv.DictWriter(handle, fieldnames=EXTRACT_FIELDS, delimiter="\t", lineterminator="\n")
-        writer.writeheader()
-        records = paired_fastq(sample.r1, sample.r2)
+    previous_elapsed = 0.0
+    fingerprint = _resume_fingerprint(config, sample)
+
+    def save_resume():
+        state = {
+            "schema": 1, "tagforge_version": __version__, "fingerprint": fingerprint,
+            "reads_completed": totals["total_reads"],
+            "extracted_reads": totals["extracted_reads"],
+            "safe_output_bytes": tmp_output.stat().st_size,
+            "elapsed_seconds": previous_elapsed + time.monotonic() - started,
+            "parallel_backend": totals.get("parallel_backend", "unknown"),
+            "segment_counters": {name: dict(counter) for name, counter in segment_counters.items()},
+        }
+        with atomic_text(resume_path) as state_handle:
+            json.dump(state, state_handle, separators=(",", ":"))
+
+    resumed = False
+    if resume_path.exists() and resume:
+        state = json.loads(resume_path.read_text(encoding="utf-8"))
+        if state.get("schema") != 1 or state.get("tagforge_version") != __version__ or state.get("fingerprint") != fingerprint:
+            raise ConfigError(
+                f"Extraction resume state does not match current inputs/config: {resume_path}. "
+                "Use --overwrite to restart safely."
+            )
+        if not tmp_output.exists():
+            raise ConfigError(f"Extraction resume output is missing: {tmp_output}. Use --overwrite to restart.")
+        safe_bytes = int(state["safe_output_bytes"])
+        with open(tmp_output, "r+b") as raw_handle:
+            raw_handle.truncate(safe_bytes)
+        totals["total_reads"] = int(state["reads_completed"])
+        totals["extracted_reads"] = int(state["extracted_reads"])
+        previous_elapsed = float(state.get("elapsed_seconds", 0.0))
+        for name, values in state.get("segment_counters", {}).items():
+            if name in segment_counters:
+                segment_counters[name].update(values)
+        resumed = True
+        logger.info("extract_resume\treads=%s\tsafe_output_bytes=%s", totals["total_reads"], safe_bytes)
+    else:
+        if tmp_output.exists() and resume and not resume_path.exists():
+            raise ConfigError(
+                f"Untracked extraction temporary file cannot be resumed safely: {tmp_output}. "
+                "Use --overwrite to restart."
+            )
+        tmp_output.unlink(missing_ok=True); resume_path.unlink(missing_ok=True)
+        with gzip.open(tmp_output, "wt", encoding="utf-8", newline="", compresslevel=config.compression_level) as initial:
+            csv.DictWriter(initial, fieldnames=EXTRACT_FIELDS, delimiter="\t", lineterminator="\n").writeheader()
+        save_resume()
+    progress_fields = [
+        "status", "reads_completed", "input_percent", "elapsed_seconds",
+        "reads_per_second", "eta_seconds", "estimated_finish", "output_tmp_bytes",
+    ]
+
+    def update_progress(status: str, input_fraction: float):
+        elapsed = previous_elapsed + time.monotonic() - started
+        rate = totals["total_reads"] / elapsed if elapsed else 0.0
+        eta = elapsed * (1.0 - input_fraction) / input_fraction if 0 < input_fraction < 1 else 0.0
+        finish = (
+            (datetime.now().astimezone() + timedelta(seconds=eta)).isoformat(timespec="seconds")
+            if eta else ""
+        )
+        row = {
+            "status": status, "reads_completed": totals["total_reads"],
+            "input_percent": f"{input_fraction * 100:.2f}",
+            "elapsed_seconds": f"{elapsed:.2f}", "reads_per_second": f"{rate:.2f}",
+            "eta_seconds": f"{eta:.2f}" if eta else "", "estimated_finish": finish,
+            "output_tmp_bytes": tmp_output.stat().st_size if tmp_output.exists() else 0,
+        }
+        write_tsv(progress_output, progress_fields, [row])
+        logger.info(
+            "extract_progress\treads=%s\tinput_percent=%s\treads_per_second=%s\t"
+            "eta_seconds=%s\testimated_finish=%s\tstatus=%s",
+            row["reads_completed"], row["input_percent"], row["reads_per_second"],
+            row["eta_seconds"] or "NA", row["estimated_finish"] or "NA", status,
+        )
+        if status == "running":
+            eta_text = f"{row['eta_seconds']}s" if row["eta_seconds"] else "NA"
+            print(
+                f"{sample_name} extract: {row['reads_completed']:,} reads, "
+                f"input≈{row['input_percent']}%, speed={float(row['reads_per_second']):,.0f}/s, "
+                f"ETA={eta_text}",
+                flush=True,
+            )
+
+    executor = None
+    preview_mode = "a" if resumed and preview_output.exists() else "w"
+    preview_handle = open(preview_output, preview_mode, encoding="utf-8", newline="")
+    preview_writer = csv.DictWriter(
+        preview_handle, fieldnames=EXTRACT_FIELDS, delimiter="\t", lineterminator="\n"
+    )
+    if preview_mode == "w": preview_writer.writeheader()
+    preview_handle.flush()
+    try:
         if config.threads == 1:
-            extracted = (_extract_record(record, config.segments) for record in records)
-            executor = None
             totals["parallel_backend"] = "serial"
         else:
             try:
                 executor = ProcessPoolExecutor(max_workers=config.threads)
                 totals["parallel_backend"] = "process"
             except (PermissionError, NotImplementedError):
-                # Some restricted macOS/container runtimes deny POSIX semaphore
-                # introspection. Cutadapt's compiled matcher can still run via
-                # threads; Linux/Slurm normally takes the process path above.
                 executor = ThreadPoolExecutor(max_workers=config.threads)
                 totals["parallel_backend"] = "thread"
-            map_chunksize = max(1, min(1000, config.chunk_size // config.threads))
-            extracted = executor.map(
-                _extract_record, records, repeat(tuple(config.segments)), chunksize=map_chunksize
-            )
-        try:
-            for row, runtime_stats in extracted:
-                totals["total_reads"] += 1
-                if row["extraction_status"] == "success":
-                    totals["extracted_reads"] += 1
-                for segment in config.segments:
-                    stat = runtime_stats[segment.name]
-                    counter = segment_counters[segment.name]
-                    counter["total_reads"] += 1
-                    counter["final_success"] += int(stat["success"])
-                    counter["cutadapt_microseconds"] += round(stat["linker_elapsed_seconds"] * 1_000_000)
-                    if segment.method in {"linker", "linker_fixed"}:
-                        counter["linker_attempted"] += 1
-                        linker_success = stat["method"] == "linker" and stat["success"]
-                        counter["linker_success"] += int(linker_success)
-                        counter["linker_failed"] += int(not linker_success)
-                        if stat["linker_failure_reason"]:
-                            reason = stat["linker_failure_reason"].split(":", 1)[0]
-                            if reason.startswith("right_linker_not_found"):
-                                reason = "right_linker_not_found"
-                            counter[reason] += 1
-                        counter["reads_with_multiple_left_matches"] += int(stat["left_linker_matches"] > 1)
-                        counter["reads_with_multiple_right_matches"] += int(stat["right_linker_matches"] > 1)
-                        counter["reads_with_multiple_candidate_pairs"] += int(stat["linker_candidate_pairs"] > 1)
-                        counter["linker_candidate_pairs_total"] += stat["linker_candidate_pairs"]
-                        if stat["selected_linker_gap"] >= 0:
-                            counter["selected_gap_count"] += 1
-                            counter["selected_gap_sum"] += stat["selected_linker_gap"]
-                            gap_key = f"selected_gap_{stat['selected_linker_gap']}"
-                            counter[gap_key] += 1
-                    fixed_attempted = segment.method == "fixed" or (
-                        segment.method == "linker_fixed" and stat["method"] != "linker"
-                    )
-                    if fixed_attempted:
-                        counter["fixed_attempted"] += 1
-                        fixed_success = stat["method"] == "fixed" and stat["success"]
-                        counter["fixed_success"] += int(fixed_success)
-                        counter["fixed_failed"] += int(not fixed_success)
-                writer.writerow(row)
-        finally:
-            if executor is not None:
-                executor.shutdown(wait=True, cancel_futures=True)
-    wall_seconds = time.monotonic() - started
+        update_progress("resuming" if resumed else "running", 0.0)
+        reads_to_skip = totals["total_reads"]
+        reads_seen = 0
+        for batch, input_fraction in paired_fastq_batches(
+            sample.r1, sample.r2, config.chunk_size
+        ):
+            if reads_seen < reads_to_skip:
+                remaining = reads_to_skip - reads_seen
+                if remaining >= len(batch):
+                    reads_seen += len(batch)
+                    update_progress("resuming", input_fraction)
+                    continue
+                batch = batch[remaining:]
+                reads_seen += remaining
+            if executor is None:
+                extracted = (_extract_record(record, config.segments) for record in batch)
+            else:
+                map_chunksize = max(1, min(1000, len(batch) // config.threads))
+                extracted = executor.map(
+                    _extract_record, batch, repeat(tuple(config.segments), len(batch)),
+                    chunksize=map_chunksize,
+                )
+            with gzip.open(
+                tmp_output, "at", encoding="utf-8", newline="",
+                compresslevel=config.compression_level,
+            ) as handle:
+                writer = csv.DictWriter(
+                    handle, fieldnames=EXTRACT_FIELDS, delimiter="\t", lineterminator="\n"
+                )
+                for row, runtime_stats in extracted:
+                    totals["total_reads"] += 1
+                    if row["status"] == "success":
+                        totals["extracted_reads"] += 1
+                    for segment in config.segments:
+                        stat = runtime_stats[segment.name]
+                        counter = segment_counters[segment.name]
+                        counter["total_reads"] += 1
+                        counter["final_success"] += int(stat["success"])
+                        counter["cutadapt_microseconds"] += round(stat["linker_elapsed_seconds"] * 1_000_000)
+                        if segment.method in {"linker", "linker_fixed"}:
+                            counter["linker_attempted"] += 1
+                            linker_success = stat["method"] == "linker" and stat["success"]
+                            counter["linker_success"] += int(linker_success)
+                            counter["linker_failed"] += int(not linker_success)
+                            if stat["linker_failure_reason"]:
+                                reason = stat["linker_failure_reason"].split(":", 1)[0]
+                                if reason.startswith("right_linker_not_found"):
+                                    reason = "right_linker_not_found"
+                                counter[reason] += 1
+                            counter["reads_with_multiple_left_matches"] += int(stat["left_linker_matches"] > 1)
+                            counter["reads_with_multiple_right_matches"] += int(stat["right_linker_matches"] > 1)
+                            counter["reads_with_multiple_candidate_pairs"] += int(stat["linker_candidate_pairs"] > 1)
+                            counter["linker_candidate_pairs_total"] += stat["linker_candidate_pairs"]
+                            if stat["selected_linker_gap"] >= 0:
+                                counter["selected_gap_count"] += 1
+                                counter["selected_gap_sum"] += stat["selected_linker_gap"]
+                                gap_key = f"selected_gap_{stat['selected_linker_gap']}"
+                                counter[gap_key] += 1
+                        fixed_attempted = segment.method == "fixed" or (
+                            segment.method == "linker_fixed" and stat["method"] != "linker"
+                        )
+                        if fixed_attempted:
+                            counter["fixed_attempted"] += 1
+                            fixed_success = stat["method"] == "fixed" and stat["success"]
+                            counter["fixed_success"] += int(fixed_success)
+                            counter["fixed_failed"] += int(not fixed_success)
+                    writer.writerow(row)
+                    if totals["total_reads"] <= config.extraction_preview_reads:
+                        preview_writer.writerow(row)
+            preview_handle.flush()
+            save_resume()
+            update_progress("running", input_fraction)
+        os.replace(tmp_output, output)
+        resume_path.unlink(missing_ok=True)
+        update_progress("completed", 1.0)
+    except Exception:
+        update_progress("failed", 0.0)
+        raise
+    finally:
+        preview_handle.close()
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+    wall_seconds = previous_elapsed + time.monotonic() - started
     reads_per_second = totals["total_reads"] / wall_seconds if wall_seconds else 0.0
     stats_rows = []
     for segment in config.segments:

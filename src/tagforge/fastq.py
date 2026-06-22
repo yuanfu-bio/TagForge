@@ -53,15 +53,59 @@ def _records(handle: TextIO, path: Path):
         yield read_id, seq, qual
 
 
+def _paired_records(h1, h2, r1: Path, r2: Path) -> Iterator[PairedRead]:
+    it1, it2 = _records(h1, r1), _records(h2, r2)
+    while True:
+        a = next(it1, None); b = next(it2, None)
+        if a is None and b is None:
+            return
+        if a is None or b is None:
+            raise FastqError(f"Paired FASTQ files have different record counts: {r1}, {r2}")
+        if a[0] != b[0]:
+            raise FastqError(f"Read ID mismatch: R1={a[0]!r}, R2={b[0]!r}")
+        yield PairedRead(a[0], a[1], a[2], b[1], b[2])
+
+
 def paired_fastq(r1: Path, r2: Path) -> Iterator[PairedRead]:
     with open_text(r1) as h1, open_text(r2) as h2:
-        it1, it2 = _records(h1, r1), _records(h2, r2)
+        yield from _paired_records(h1, h2, r1, r2)
+
+
+def _physical_position(handle) -> int:
+    """Return compressed bytes consumed for gzip, normal bytes otherwise."""
+    # gzip.open(..., "rt") returns TextIOWrapper -> GzipFile -> raw file.
+    # TextIOWrapper.tell() is an uncompressed text cookie and must never be
+    # compared with the compressed file size.
+    binary = getattr(handle, "buffer", handle)
+    physical = getattr(binary, "fileobj", None)
+    return physical.tell() if physical is not None else binary.tell()
+
+
+def paired_fastq_batches(r1: Path, r2: Path, batch_size: int):
+    """Yield bounded paired-read batches and approximate physical input fraction."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    total_bytes = r1.stat().st_size + r2.stat().st_size
+    with open_text(r1) as h1, open_text(r2) as h2:
+        records = _paired_records(h1, h2, r1, r2)
+        pending = None
         while True:
-            a = next(it1, None); b = next(it2, None)
-            if a is None and b is None:
+            batch = []
+            if pending is not None:
+                batch.append(pending)
+                pending = None
+            for _ in range(batch_size):
+                if len(batch) >= batch_size:
+                    break
+                record = next(records, None)
+                if record is None:
+                    break
+                batch.append(record)
+            if not batch:
                 return
-            if a is None or b is None:
-                raise FastqError(f"Paired FASTQ files have different record counts: {r1}, {r2}")
-            if a[0] != b[0]:
-                raise FastqError(f"Read ID mismatch: R1={a[0]!r}, R2={b[0]!r}")
-            yield PairedRead(a[0], a[1], a[2], b[1], b[2])
+            pending = next(records, None)
+            consumed = _physical_position(h1) + _physical_position(h2)
+            fraction = 1.0 if pending is None else (
+                min(0.9999, consumed / total_bytes) if total_bytes else 0.9999
+            )
+            yield batch, fraction

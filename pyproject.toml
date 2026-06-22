@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tagforge"
-version = "0.1.3"
+version = "0.1.6"
 description = "Streaming barcode and UMI processing for paired-end FASTQ libraries"
 readme = "README.md"
 requires-python = ">=3.9"

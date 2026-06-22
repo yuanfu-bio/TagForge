@@ -11,8 +11,8 @@ from tagforge import __version__
 from tagforge.barcode_correct import WhitelistCorrector
 from tagforge.config import CorrectionConfig, SegmentConfig, default_downsample_ratios, load_config
 from tagforge.downsample import calculate_metrics
-from tagforge.extract import extract_segment
-from tagforge.fastq import paired_fastq
+from tagforge.extract import decode_method_payload, decode_segment_payload, extract_segment
+from tagforge.fastq import _physical_position, open_text, paired_fastq, paired_fastq_batches
 from tagforge.slurm import make_slurm
 from tagforge.quick_test import _take_leading_records
 from tagforge.umi_correct import deduplicate_umis
@@ -28,7 +28,7 @@ class CoreTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
         setup = (root / "setup.py").read_text(encoding="utf-8")
-        self.assertEqual(__version__, "0.1.3")
+        self.assertEqual(__version__, "0.1.6")
         self.assertIn(f'version = "{__version__}"', pyproject)
         self.assertIn(f'version="{__version__}"', setup)
 
@@ -80,6 +80,37 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(corr.correct("NACGA").correction_type, "shift_and_mismatch")
         ambiguous = WhitelistCorrector(["AAAA", "AACC"], CorrectionConfig(True, 0, 1, False, True), 4)
         self.assertTrue(ambiguous.correct("AAAC").ambiguous)
+
+    def test_symmetric_fixed_shift_and_compact_payload(self):
+        correction = CorrectionConfig(True, 1, 0, True, False)
+        segment = SegmentConfig(
+            "PB", "barcode1", "R1", "fixed", 8, start=16, correction=correction
+        )
+        raw = extract_segment("N" * 15 + "L" + "ABCDEFGH" + "R", segment).raw_sequence
+        self.assertEqual(raw, "LABCDEFGHR")
+        self.assertEqual(
+            WhitelistCorrector(["LABCDEFG"], correction, 8).correct(raw, anchor=1).shift_distance,
+            -1,
+        )
+        self.assertEqual(
+            WhitelistCorrector(["ABCDEFGH"], correction, 8).correct(raw, anchor=1).shift_distance,
+            0,
+        )
+        self.assertEqual(
+            WhitelistCorrector(["BCDEFGHR"], correction, 8).correct(raw, anchor=1).shift_distance,
+            1,
+        )
+        self.assertEqual(decode_segment_payload('AAAA,CCCC', [segment, SegmentConfig(
+            "PB2", "barcode1", "R1", "fixed", 4, start=0
+        )]), {"PB": "AAAA", "PB2": "CCCC"})
+        with self.assertRaises(ValueError):
+            decode_segment_payload('{"PB":"AAAA"}', [segment])
+        self.assertEqual(
+            decode_method_payload("FL", [segment, SegmentConfig(
+                "PB2", "barcode1", "R1", "fixed", 4, start=0
+            )]),
+            {"PB": "fixed", "PB2": "linker"},
+        )
 
     def test_umi_directional(self):
         class FakeClusterer:
@@ -165,9 +196,18 @@ segments:
         with tempfile.TemporaryDirectory() as td:
             paths = [Path(td) / f"r{x}.fq.gz" for x in (1, 2)]
             for i, path in enumerate(paths, 1):
-                with gzip.open(path, "wt") as h: h.write(f"@r/ {i}\nAC\n+\nII\n")
+                with gzip.open(path, "wt") as h:
+                    for n in range(3):
+                        h.write(f"@r{n}/ {i}\nAC\n+\nII\n")
             reads = list(paired_fastq(*paths))
-            self.assertEqual(reads[0].read_id, "r/")
+            self.assertEqual(reads[0].read_id, "r0/")
+            batches = list(paired_fastq_batches(*paths, batch_size=1))
+            self.assertEqual([len(batch) for batch, _ in batches], [1, 1, 1])
+            self.assertLess(batches[0][1], 1.0)
+            self.assertEqual(batches[-1][1], 1.0)
+            with open_text(paths[0]) as handle:
+                handle.readline()
+                self.assertLessEqual(_physical_position(handle), paths[0].stat().st_size)
 
 
 if __name__ == "__main__":

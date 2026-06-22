@@ -239,21 +239,22 @@ File:
 extracted/{sample}.extracted.tsv.gz
 ```
 
-Suggested columns:
+Compact columns (segment values follow configuration order):
 
 ```
 read_id
-raw_barcode1
-raw_barcode2
-raw_umi
-barcode1_segment_raw_values
-barcode2_segment_raw_values
-umi_segment_raw_values
-extraction_status
+barcode1_segments
+barcode2_segments
+umi_segments
+methods
+status
 failure_reason
 ```
 
-This file may be optional or compressed because it can be large. If too large, you can decide to use other file type, such as Parquet or else more suitable？
+Segment fields are comma-separated strings. `methods` is a configuration-ordered
+F/L/X code string. Combined raw values and per-read JSON keys are omitted to
+avoid redundant storage. The file remains gzip-compressed because it can be
+large.
 
 ### 8.2 Correction Trace
 

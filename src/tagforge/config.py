@@ -68,7 +68,8 @@ class TagForgeConfig:
     quick_test_enabled: bool = True
     quick_test_reads: int = 10000
     threads: int = 1
-    chunk_size: int = 100000
+    chunk_size: int = 10000
+    extraction_preview_reads: int = 1000
     compression_level: int = 3
     overwrite: bool = False
     trace_enabled: bool = True
@@ -219,6 +220,12 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
     threads = int(perf.get("threads", 1))
     if threads < 1:
         raise ConfigError("performance.threads must be >= 1")
+    chunk_size = int(perf.get("chunk_size", 10000))
+    preview_reads = int(perf.get("extraction_preview_reads", 1000))
+    if chunk_size < 1:
+        raise ConfigError("performance.chunk_size must be >= 1")
+    if preview_reads < 0:
+        raise ConfigError("performance.extraction_preview_reads must be >= 0")
     quick_test_reads = int(quick.get("reads", 10000))
     if quick_test_reads < 1:
         raise ConfigError("quick_test.reads must be >= 1")
@@ -233,7 +240,8 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         downsample_seed=int(ds.get("random_seed", 12345)), downsample_repeats=int(ds.get("repeats", 1)),
         quick_test_enabled=bool(quick.get("enabled", True)), quick_test_reads=quick_test_reads,
         threads=threads,
-        chunk_size=int(perf.get("chunk_size", 100000)), compression_level=int(perf.get("compression_level", 3)),
+        chunk_size=chunk_size, extraction_preview_reads=preview_reads,
+        compression_level=int(perf.get("compression_level", 3)),
         overwrite=bool(resume.get("overwrite", False)), trace_enabled=bool(output.get("correction_trace", True)), raw=raw,
     )
     if check_files:

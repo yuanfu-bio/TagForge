@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import gzip
-import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -56,15 +55,15 @@ def write_tsv(path: Path, fields: list[str], rows: Iterable[Mapping], gzip_level
         writer.writerows(rows)
 
 
-def json_compact(value) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def touch_checkpoint(path: Path):
+def touch_checkpoint(path: Path, version: str):
     with atomic_text(path) as handle:
-        handle.write("done\n")
+        handle.write(f"tagforge_version={version}\n")
 
 
-def step_complete(checkpoint: Path, outputs: list[Path], overwrite: bool) -> bool:
-    return not overwrite and checkpoint.is_file() and all(path.is_file() and path.stat().st_size > 0 for path in outputs)
-
+def step_complete(checkpoint: Path, outputs: list[Path], overwrite: bool, version: str) -> bool:
+    return (
+        not overwrite
+        and checkpoint.is_file()
+        and checkpoint.read_text(encoding="utf-8").strip() == f"tagforge_version={version}"
+        and all(path.is_file() and path.stat().st_size > 0 for path in outputs)
+    )

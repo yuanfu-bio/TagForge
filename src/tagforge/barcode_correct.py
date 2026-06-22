@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 from collections import Counter
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -9,8 +8,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
+from . import __version__
 from .config import CorrectionConfig, SegmentConfig, TagForgeConfig, ConfigError
-from .extract import hamming
+from .extract import decode_method_payload, decode_segment_payload, hamming
 from .io_utils import atomic_text, open_tsv, sample_dirs, write_tsv
 
 
@@ -38,15 +38,20 @@ class WhitelistCorrector:
         self.length = length
 
     @lru_cache(maxsize=200000)
-    def correct(self, raw: str) -> CorrectionResult:
+    def correct(self, raw: str, anchor: int = 0) -> CorrectionResult:
         raw = raw.upper()
         if not self.config.enabled:
-            return CorrectionResult(raw, raw, raw, "disabled", 0, 0, "disabled")
+            sequence = raw[anchor:anchor + self.length]
+            return CorrectionResult(raw, sequence, sequence, "disabled", 0, 0, "disabled")
         candidates = []
         max_shift = self.config.max_shift if self.config.allow_shift else 0
         max_mismatch = self.config.max_mismatch if self.config.allow_mismatch else 0
-        for shift in range(max_shift + 1):
-            shifted = raw[shift:shift + self.length]
+        shifts = [0] + [signed for distance in range(1, max_shift + 1) for signed in (-distance, distance)]
+        for shift in shifts:
+            start = anchor + shift
+            if start < 0:
+                continue
+            shifted = raw[start:start + self.length]
             if len(shifted) != self.length:
                 continue
             if shifted in self.value_set:
@@ -65,12 +70,12 @@ class WhitelistCorrector:
                     for known in best:
                         candidates.append((shift, best_distance, known, shifted))
         if not candidates:
-            return CorrectionResult(raw, raw[:self.length], "", "failed", -1, -1, "failed")
+            return CorrectionResult(raw, raw[anchor:anchor + self.length], "", "failed", 0, -1, "failed")
         score = min(
-            ((x[0] > 0) + (x[1] > 0), x[0] + x[1], x[1], x[0])
+            ((x[0] != 0) + (x[1] > 0), abs(x[0]) + x[1], x[1], abs(x[0]))
             for x in candidates
         )
-        best = [x for x in candidates if ((x[0] > 0) + (x[1] > 0), x[0] + x[1], x[1], x[0]) == score]
+        best = [x for x in candidates if ((x[0] != 0) + (x[1] > 0), abs(x[0]) + x[1], x[1], abs(x[0])) == score]
         sequences = {x[2] for x in best}
         if len(sequences) != 1:
             return CorrectionResult(raw, best[0][3], "", "ambiguous", best[0][0], best[0][1], "failed", True)
@@ -145,22 +150,44 @@ def correct_sample(config: TagForgeConfig, sample_name: str):
             if trace_writer: trace_writer.writeheader()
             for row in open_tsv(source):
                 summary["total_reads"] += 1
-                if row["extraction_status"] != "success":
+                required = {"read_id", "barcode1_segments", "barcode2_segments", "umi_segments", "methods", "status"}
+                missing = required - set(row)
+                if missing:
+                    raise ConfigError(
+                        "Incompatible extracted table schema; missing column(s): "
+                        + ", ".join(sorted(missing))
+                        + f". Re-run 'tagforge extract --overwrite' with TagForge {__version__}."
+                    )
+                if row["status"] != "success":
                     continue
                 summary["extracted_reads"] += 1
-                extraction_methods = json.loads(row.get("segment_extraction_methods") or "{}")
+                extraction_methods = decode_method_payload(
+                    row["methods"], config.segments
+                )
                 values = {}
-                for target, col in (("barcode1", "barcode1_segment_raw_values"), ("barcode2", "barcode2_segment_raw_values")):
-                    raw_values = json.loads(row[col]); corrected_values = []
-                    for segment in (s for s in config.segments if s.target == target):
-                        result = correctors[segment.name].correct(raw_values.get(segment.name, ""))
+                for target, col in (("barcode1", "barcode1_segments"), ("barcode2", "barcode2_segments")):
+                    target_segments = [s for s in config.segments if s.target == target]
+                    raw_values = decode_segment_payload(row[col], target_segments); corrected_values = []
+                    for segment in target_segments:
+                        source_method = extraction_methods.get(segment.name, "unknown")
+                        extra = (
+                            segment.correction.max_shift
+                            if source_method == "fixed" and segment.correction.enabled
+                            and segment.correction.allow_shift else 0
+                        )
+                        anchor = min(extra, segment.start or 0) if source_method == "fixed" else 0
+                        result = correctors[segment.name].correct(
+                            raw_values.get(segment.name, ""), anchor
+                        )
                         corrected_values.append(result.corrected_sequence)
                         count = counters[segment.name]
                         count["extracted_reads"] += 1; count[result.correction_type] += 1
-                        source_method = extraction_methods.get(segment.name, "unknown")
                         count[f"{source_method}_extracted"] += 1
                         count[f"mismatch_{max(result.mismatch_distance, 0)}"] += int(result.mismatch_distance >= 0)
-                        count[f"shift_{max(result.shift_distance, 0)}"] += int(result.shift_distance >= 0)
+                        count[f"shift_{abs(result.shift_distance)}"] += int(result.success)
+                        if result.success and result.shift_distance:
+                            direction = "left" if result.shift_distance < 0 else "right"
+                            count[f"shift_{direction}_{abs(result.shift_distance)}"] += 1
                         if result.success:
                             count["valid_reads"] += 1
                             count[f"{source_method}_valid"] += 1
@@ -173,7 +200,8 @@ def correct_sample(config: TagForgeConfig, sample_name: str):
                                 "shift_distance": result.shift_distance, "mismatch_distance": result.mismatch_distance,
                                 "correction_type": result.correction_type})
                     values[target] = "".join(corrected_values) if all(corrected_values) else ""
-                umi_values = json.loads(row["umi_segment_raw_values"])
+                umi_segments = [s for s in config.segments if s.target == "umi"]
+                umi_values = decode_segment_payload(row["umi_segments"], umi_segments)
                 umi = "".join(umi_values.get(s.name, "") for s in config.segments if s.target == "umi")
                 fb_name = annotation.get(values["barcode2"], "")
                 if values["barcode1"]: summary["barcode1_valid"] += 1
@@ -200,7 +228,11 @@ def correct_sample(config: TagForgeConfig, sample_name: str):
                "fixed_barcode_valid_count": c["fixed_valid"],
                "fixed_barcode_valid_rate": c["fixed_valid"] / c["fixed_extracted"] if c["fixed_extracted"] else ""}
         for i in range(max(segment.correction.max_mismatch, 2) + 1): row[f"mismatch_{i}_count"] = c[f"mismatch_{i}"]
-        for i in range(max(segment.correction.max_shift, 2) + 1): row[f"shift_{i}_count"] = c[f"shift_{i}"]
+        for i in range(max(segment.correction.max_shift, 2) + 1):
+            row[f"shift_{i}_count"] = c[f"shift_{i}"]
+            if i:
+                row[f"shift_left_{i}_count"] = c[f"shift_left_{i}"]
+                row[f"shift_right_{i}_count"] = c[f"shift_right_{i}"]
         stat_rows.append(row)
     stat_rows.extend([
         {"scope": "final_barcode1", "target_type": "barcode1", "total_reads": total, "valid_reads": summary["barcode1_valid"], "valid_rate": summary["barcode1_valid"] / total if total else 0},
