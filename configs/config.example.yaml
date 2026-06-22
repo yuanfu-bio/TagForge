@@ -1,0 +1,76 @@
+# Fixed coordinates are 0-based half-open intervals [start, start + length).
+project:
+  name: tagforge_example
+  workdir: ..
+  output_dir: 02_output
+
+samples:
+  - sample: example
+    r1: examples/small_fastq/example_raw_1.fq.gz
+    r2: examples/small_fastq/example_raw_2.fq.gz
+
+barcode2_annotation:
+  fb_info: examples/FB_info.tsv
+  id_column: FB_ID
+  sequence_column: sequence
+  name_column: antibody_name
+
+segments:
+  # Methods may be combined as `methods: [linker, fixed]`: linker is tried
+  # first, and only failed reads use fixed on the original read coordinates.
+  - name: CELL
+    target: barcode1
+    read: R1
+    methods: [linker, fixed]
+    right_linker: AGGTC
+    start: 0
+    length: 8
+    whitelist: examples/CELL_WL.txt
+    correction:
+      enabled: true
+      max_shift: 1
+      max_mismatch: 1
+      allow_shift: true
+      allow_mismatch: true
+  - name: UMI
+    target: umi
+    read: R2
+    method: fixed
+    start: 0
+    length: 6
+  - name: FB
+    target: barcode2
+    read: R2
+    method: fixed
+    start: 6
+    length: 6
+    whitelist: examples/FB_WL.txt
+    correction:
+      enabled: true
+      max_shift: 0
+      max_mismatch: 1
+      allow_shift: false
+      allow_mismatch: true
+
+umi:
+  correction_method: directional
+  max_distance: 1
+
+downsample:
+  enabled: true
+  ratios: auto
+  random_seed: 12345
+  repeats: 1
+
+quick_test:
+  enabled: true
+  reads: 10000
+
+performance:
+  threads: 2
+  chunk_size: 100000
+  compression_level: 3
+
+resume:
+  enabled: true
+  overwrite: false

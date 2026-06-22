@@ -1,0 +1,13 @@
+name: tagforge
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - cutadapt>=4.6
+  - umi_tools>=1.1.5
+  - pyyaml>=6
+  - pip
+  - setuptools>=68
+  - wheel
+  - pytest>=7
