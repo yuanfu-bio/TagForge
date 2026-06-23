@@ -167,6 +167,29 @@ position and `resume_skip_percent` reports progress toward that position; the
 overall percentage never moves backward. Older 0.1.6 manifests without a saved
 input fraction show `input_percent=NA` until fast-forward reaches the checkpoint.
 
+Barcode correction uses the same durable pattern. After every
+`performance.chunk_size` extracted rows, TagForge closes complete gzip members
+for both `valid_reads.tsv.gz.tmp` and the optional correction trace, then
+atomically advances `01_checkpoint/{sample}.correct.resume.json`. Restarting
+the same `tagforge correct` or `tagforge run` command truncates any uncommitted
+tails, restores all correction counters, rapidly skips committed extracted
+rows without repeating whitelist searches, and continues at the next batch.
+`--overwrite` discards this state and restarts correction intentionally.
+Whitelist correction is parallelized across extracted-read chunks. By default,
+it uses `performance.threads`; set `performance.barcode_workers` to cap this
+stage independently when memory or gzip output pressure is the bottleneck. Even
+when workers finish out of order, TagForge writes and checkpoints chunks in
+the original extracted-read order so resume still skips a simple committed
+prefix safely.
+
+Live status is written to
+`00_logs/{sample}.correction_progress.tsv` and the pipeline log as
+`correction_progress`. It includes processed/extracted/combined-valid reads,
+physical input percentage, reads per second, ETA, estimated finish time,
+resume fast-forward percentage, and both temporary-output sizes. As with
+extraction, the percentage saved in the manifest is preserved during
+fast-forward rather than resetting to zero.
+
 Barcode segments can have independent whitelist and correction controls:
 
 ```yaml
@@ -304,19 +327,63 @@ matching read IDs.
 - Split samples into separate Slurm jobs with `make-slurm`.
 
 `performance.threads` and the overriding CLI option `--threads` control the
-number of process workers used for Cutadapt-backed linker extraction. Process
-workers are used instead of Python threads so all allocated Slurm CPUs can be
-used reliably; output order remains identical to FASTQ input order. The chosen
-worker count and actual backend are recorded in the sample pipeline log. On a
-restricted runtime that blocks process/semaphore creation, TagForge falls back
-to a Cutadapt thread pool; normal Linux and Slurm jobs use process workers.
+number of process workers used for Cutadapt-backed linker extraction,
+barcode whitelist correction, and, unless `performance.umi_workers` is set,
+UMI correction. Set `performance.barcode_workers` or
+`performance.umi_workers` when a later stage needs a lower or higher worker
+count than extraction. Process workers are used instead of Python threads so
+all allocated Slurm CPUs can be used reliably; output order remains
+deterministic. The chosen worker count and actual backend are recorded in the
+sample pipeline log. On a restricted runtime that blocks process/semaphore
+creation, extraction falls back to a Cutadapt thread pool and barcode
+correction/UMI correction fall back to serial execution; normal Linux and
+Slurm jobs use process workers.
 Because matching uses Cutadapt's Python API, Linux process listings show
 TagForge Python workers rather than a separate `cutadapt --cores` command; each
 worker is nevertheless executing Cutadapt's matching engine.
 
-Read-level files are never loaded wholesale. UMI grouping holds one
-Barcode1–feature group at a time. Report creation only loads summary tables;
-feature totals and molecule counts are streamed.
+Barcode correction batches are independent and safe to parallelize, but each
+worker holds its own whitelist indexes and one finished batch can be waiting in
+memory until earlier batches are committed. If the correction trace is enabled
+and many barcode segments are traced per read, start with
+`barcode_workers: 8`–`16` on a 28-CPU node and increase only after checking
+memory and disk-write pressure. Disable `output.correction_trace` when the
+trace is not needed for QC.
+
+UMI-tools' `UMIClusterer` has no internal thread setting. TagForge therefore
+groups each Barcode1–feature scope independently and sends bounded batches to
+multiple worker processes. `performance.umi_batch_size` (default 5,000) limits
+the number of unique UMIs in a normal batch, and there is at most one pending
+batch per worker. A single unusually large Barcode1–feature group is never
+split because doing so would change correction results; it can therefore exceed
+the configured batch size. `performance.umi_sqlite_cache_mb` (default 64) caps
+the aggregation database cache and keeps temporary sorting on disk.
+
+For a 28-CPU Slurm job, start with:
+
+```yaml
+performance:
+  threads: 28
+  barcode_workers: 16   # omit to use 28; lower if trace/output memory is limiting
+  umi_workers: 12       # increase only while RAM and CPU efficiency remain healthy
+  umi_batch_size: 5000  # lower to reduce queued UMI memory
+  umi_sqlite_cache_mb: 64
+  chunk_size: 50000
+  compression_level: 1
+```
+
+Every UMI worker has its own Python/UMI-tools baseline memory. As a practical
+starting point, reserve roughly 0.5–1 GB per UMI worker plus headroom for the
+largest single Barcode1–feature group, then measure the job's actual peak RSS.
+If memory is plentiful and CPU utilization remains below the allocation,
+increase `umi_workers`; if the job approaches its memory limit, lower
+`umi_workers` first and then `umi_batch_size`. The log entries
+`dedup_parallel_start` and `dedup_summary` report effective workers, batch
+limits, peak batch size, and separate SQLite aggregation/UMI clustering times.
+
+Read-level files are never loaded wholesale. UMI aggregation is disk-backed,
+and only bounded complete correction groups are in flight. Report creation only
+loads summary tables; feature totals and molecule counts are streamed.
 
 ## Troubleshooting and FAQ
 

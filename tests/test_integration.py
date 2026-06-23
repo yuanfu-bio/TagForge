@@ -11,8 +11,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tagforge.config import load_config
+from tagforge.barcode_correct import correct_sample
 from tagforge.extract import extract_sample
 from tagforge.fastq import paired_fastq_batches
+from tagforge.io_utils import tsv_batches
 
 
 class IntegrationTests(unittest.TestCase):
@@ -51,7 +53,12 @@ class IntegrationTests(unittest.TestCase):
         log = (sample / "00_logs/example.pipeline.log").read_text(encoding="utf-8")
         self.assertIn("backend=cutadapt-python-api", log)
         self.assertIn("workers=2", log)
-        self.assertIn("tagforge\tversion=0.1.6", log)
+        self.assertIn("tagforge\tversion=0.1.9", log)
+        self.assertIn("correction_progress", log)
+        self.assertIn("correction_summary", log)
+        self.assertIn("correction_parallel_start", log)
+        self.assertIn("dedup_summary", log)
+        self.assertIn("workers=2", log)
         with gzip.open(sample / "02_extracted/example.extracted.tsv.gz", "rt", encoding="utf-8") as handle:
             extracted = handle.read()
         header = extracted.splitlines()[0]
@@ -96,6 +103,54 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(len(resumed_lines), 10)
             self.assertEqual(sum(line.startswith("read001\t") for line in resumed_lines), 1)
             self.assertFalse(resume_file.exists())
+
+            # Correction commits complete gzip members for both outputs and
+            # restores them, counters, and progress after interruption.
+            real_tsv_batches = tsv_batches
+
+            def interrupted_correction_batches(path, batch_size):
+                yield next(iter(real_tsv_batches(path, batch_size)))
+                raise RuntimeError("simulated correction interruption")
+
+            with patch(
+                "tagforge.barcode_correct.tsv_batches",
+                side_effect=interrupted_correction_batches,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "simulated correction interruption"):
+                    correct_sample(config, "example", resume=False)
+            correction_resume = (
+                config.output_dir / "example/01_checkpoint/example.correct.resume.json"
+            )
+            self.assertTrue(correction_resume.is_file())
+            valid_tmp = config.output_dir / "example/05_detail/example.valid_reads.tsv.gz.tmp"
+            trace_tmp = (
+                config.output_dir
+                / "example/03_corrected/example.barcode_correction_trace.tsv.gz.tmp"
+            )
+            with open(valid_tmp, "ab") as handle:
+                handle.write(b"uncommitted-tail")
+            with open(trace_tmp, "ab") as handle:
+                handle.write(b"uncommitted-tail")
+            correct_sample(config, "example", resume=True)
+            with gzip.open(
+                config.output_dir / "example/05_detail/example.valid_reads.tsv.gz",
+                "rt", encoding="utf-8",
+            ) as handle:
+                valid_lines = handle.read().splitlines()
+            self.assertEqual(len(valid_lines), 10)
+            self.assertEqual(sum(line.startswith("read001\t") for line in valid_lines), 1)
+            with gzip.open(
+                config.output_dir
+                / "example/03_corrected/example.barcode_correction_trace.tsv.gz",
+                "rt", encoding="utf-8",
+            ) as handle:
+                trace_lines = handle.read().splitlines()
+            self.assertEqual(len(trace_lines), 19)
+            self.assertFalse(correction_resume.exists())
+            correction_progress = (
+                config.output_dir / "example/00_logs/example.correction_progress.tsv"
+            ).read_text(encoding="utf-8")
+            self.assertIn("completed\t9\t9\t9\t100.00", correction_progress)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from tagforge.extract import decode_method_payload, decode_segment_payload, extr
 from tagforge.fastq import _physical_position, open_text, paired_fastq, paired_fastq_batches
 from tagforge.slurm import make_slurm
 from tagforge.quick_test import _take_leading_records
-from tagforge.umi_correct import deduplicate_umis
+from tagforge.umi_correct import _dedup_batch, _group_batches, deduplicate_umis
 
 
 class CoreTests(unittest.TestCase):
@@ -28,7 +28,7 @@ class CoreTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
         setup = (root / "setup.py").read_text(encoding="utf-8")
-        self.assertEqual(__version__, "0.1.6")
+        self.assertEqual(__version__, "0.1.9")
         self.assertIn(f'version = "{__version__}"', pyproject)
         self.assertIn(f'version="{__version__}"', setup)
 
@@ -121,6 +121,26 @@ class CoreTests(unittest.TestCase):
             result = deduplicate_umis({"AAAA": 10, "AAAT": 2, "CCCC": 3}, "directional", 1)
         self.assertEqual(result["AAAT"], "AAAA")
         self.assertEqual(result["CCCC"], "CCCC")
+
+    def test_umi_group_batches_are_bounded_without_splitting_groups(self):
+        cursor = [
+            ("b1", "f1", "AAAA", 4),
+            ("b1", "f1", "AAAT", 1),
+            ("b1", "f2", "CCCC", 2),
+            ("b2", "f1", "GGGG", 3),
+            ("b2", "f1", "GGGA", 1),
+        ]
+        batches = list(_group_batches(cursor, batch_umis=2))
+        self.assertEqual([[key for key, _ in batch] for batch in batches], [
+            [("b1", "f1")], [("b1", "f2")], [("b2", "f1")],
+        ])
+        class FakeClusterer:
+            def __call__(self, counts, threshold):
+                return [[umi] for umi in counts]
+        with patch("tagforge.umi_correct._umi_clusterer", return_value=FakeClusterer()):
+            rows, groups, reads, raw_umis = _dedup_batch(batches[0], "unique", 0)
+        self.assertEqual((groups, reads, raw_umis), (1, 5, 2))
+        self.assertEqual(len(rows), 2)
 
     def test_downsample_metrics(self):
         self.assertEqual(calculate_metrics([3, 1, 0])[:3], (4, 2, 1))

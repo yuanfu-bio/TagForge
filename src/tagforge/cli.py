@@ -76,6 +76,13 @@ quick_test:
   reads: 10000
 performance:
   threads: 2
+  # Barcode whitelist correction is parallelized by extracted-read chunks.
+  # Omit barcode_workers to use threads.
+  # barcode_workers: 2
+  # UMI-tools groups are parallelized with processes. Omit umi_workers to use threads.
+  # umi_workers: 2
+  umi_batch_size: 5000
+  umi_sqlite_cache_mb: 64
   chunk_size: 10000
   extraction_preview_reads: 1000
   compression_level: 3
@@ -88,7 +95,10 @@ resume:
 def _common(parser):
     parser.add_argument("--config", required=True, help="YAML configuration file")
     parser.add_argument("--sample", action="append", help="Sample name (repeatable; default: all)")
-    parser.add_argument("--threads", type=int, default=None, help="Parallel linker-extraction workers")
+    parser.add_argument(
+        "--threads", type=int, default=None,
+        help="Process workers for Cutadapt extraction and, unless overridden, UMI deduplication",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Ignore checkpoints and replace outputs")
 
 

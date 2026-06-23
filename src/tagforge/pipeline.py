@@ -39,12 +39,14 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
     dirs = sample_dirs(config.output_dir, sample)
     logger = sample_logger(sample, dirs["logs"] / f"{sample}.pipeline.log")
     logger.info("tagforge\tversion=%s\tstep=%s\telapsed_time=0", __version__, step)
-    if step in {"extract", "dedup"}:
+    if step in {"extract", "correct", "dedup"}:
         versions = check_external_tools()
         backend = (
             f"cutadapt-python-api:{versions.cutadapt},workers={config.threads}"
             if step == "extract"
-            else f"umi_tools-UMIClusterer:{versions.umi_tools}"
+            else f"tagforge-barcode-correct,workers={config.barcode_workers or config.threads}"
+            if step == "correct"
+            else f"umi_tools-UMIClusterer:{versions.umi_tools},workers={config.umi_workers or config.threads}"
         )
         logger.info("%s\tbackend=%s\telapsed_time=0", step, backend)
     checkpoint = dirs["checkpoint"] / f"{step}.done"
@@ -57,7 +59,9 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
     try:
         result = (
             extract_sample(config, sample, resume=not overwrite)
-            if step == "extract" else STEP_FUNCS[step](config, sample)
+            if step == "extract" else
+            correct_sample(config, sample, resume=not overwrite)
+            if step == "correct" else STEP_FUNCS[step](config, sample)
         )
         if step == "extract" and isinstance(result, tuple) and isinstance(result[1], dict):
             summary = result[1]
@@ -94,6 +98,20 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
                     time.monotonic() - start,
                 )
         if step == "correct" and isinstance(result, tuple) and isinstance(result[1], dict):
+            summary = result[1]
+            logger.info(
+                "correction_summary\ttotal_reads=%s\textracted_reads=%s\t"
+                "barcode1_valid=%s\tbarcode2_valid=%s\tcombined_valid=%s\t"
+                "reads_per_second=%.3f\trequested_workers=%s\tworkers=%s\t"
+                "chunk_size=%s\twall_seconds=%.3f\telapsed_time=%.3f",
+                summary.get("total_reads", 0), summary.get("extracted_reads", 0),
+                summary.get("barcode1_valid", 0), summary.get("barcode2_valid", 0),
+                summary.get("combined_valid", 0), summary.get("reads_per_second", 0.0),
+                summary.get("requested_workers", config.barcode_workers or config.threads),
+                summary.get("workers", config.barcode_workers or config.threads),
+                summary.get("chunk_size", config.chunk_size),
+                summary.get("wall_seconds", 0.0), time.monotonic() - start,
+            )
             for row in result[1].get("segment_method_qc", []):
                 linker_rate = row["linker_barcode_valid_rate"]
                 fixed_rate = row["fixed_barcode_valid_rate"]
@@ -109,6 +127,20 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
                     f"{float(fixed_rate):.6f}" if fixed_rate != "" else "NA",
                     time.monotonic() - start,
                 )
+        if step == "dedup" and isinstance(result, tuple) and isinstance(result[1], dict):
+            summary = result[1]
+            logger.info(
+                "dedup_summary\tvalid_reads=%s\tgroups=%s\traw_umis=%s\tmolecules=%s\t"
+                "duplicates=%s\trequested_workers=%s\tworkers=%s\tumi_batch_size=%s\tpeak_batch_umis=%s\t"
+                "sqlite_cache_mb=%s\taggregation_seconds=%.3f\tclustering_seconds=%.3f\t"
+                "wall_seconds=%.3f\telapsed_time=%.3f",
+                summary["valid_reads"], summary["groups"], summary["raw_umis"],
+                summary["molecules"], summary["duplicates"], summary["requested_workers"],
+                summary["workers"],
+                summary["umi_batch_size"], summary["peak_batch_umis"],
+                summary["sqlite_cache_mb"], summary["aggregation_seconds"],
+                summary["clustering_seconds"], summary["wall_seconds"], time.monotonic() - start,
+            )
         if not all(path.is_file() and path.stat().st_size > 0 for path in outputs):
             raise RuntimeError(f"Step {step} did not create all expected outputs")
         touch_checkpoint(checkpoint, __version__)

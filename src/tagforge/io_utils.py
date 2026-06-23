@@ -48,6 +48,42 @@ def open_tsv(path: Path) -> Iterator[dict]:
         yield from csv.DictReader(handle, delimiter="\t")
 
 
+def _physical_position(handle) -> int:
+    """Return compressed bytes consumed for gzip, normal bytes otherwise."""
+    binary = getattr(handle, "buffer", handle)
+    physical = getattr(binary, "fileobj", None)
+    return physical.tell() if physical is not None else binary.tell()
+
+
+def tsv_batches(path: Path, batch_size: int):
+    """Yield bounded TSV row batches and an approximate physical input fraction."""
+    if batch_size < 1:
+        raise ValueError("batch_size must be >= 1")
+    opener = gzip.open if str(path).endswith(".gz") else open
+    total_bytes = path.stat().st_size
+    with opener(path, "rt", encoding="utf-8", newline="") as handle:
+        rows = csv.DictReader(handle, delimiter="\t")
+        pending = None
+        while True:
+            batch = []
+            if pending is not None:
+                batch.append(pending)
+                pending = None
+            while len(batch) < batch_size:
+                row = next(rows, None)
+                if row is None:
+                    break
+                batch.append(row)
+            if not batch:
+                return
+            pending = next(rows, None)
+            consumed = _physical_position(handle)
+            fraction = 1.0 if pending is None else (
+                min(0.9999, consumed / total_bytes) if total_bytes else 0.9999
+            )
+            yield batch, fraction
+
+
 def write_tsv(path: Path, fields: list[str], rows: Iterable[Mapping], gzip_level: int = 3):
     with atomic_text(path, gzip_level) as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n", extrasaction="ignore")

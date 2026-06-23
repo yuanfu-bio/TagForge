@@ -3,6 +3,39 @@
 Every code-change release increments the patch component of the TagForge
 version. The version is kept in package metadata, the CLI, and pipeline logs.
 
+## 0.1.9 — 2026-06-23
+
+- Parallelize barcode whitelist correction across extracted-read chunks using
+  process workers while preserving ordered gzip-member commits for safe resume.
+- Add `performance.barcode_workers` to tune barcode correction independently
+  from extraction and UMI correction; when omitted it follows
+  `performance.threads`.
+- Report barcode correction backend, requested/effective workers, and chunk
+  size in pipeline logs and correction summaries.
+
+## 0.1.8 — 2026-06-23
+
+- Add resumable barcode correction with atomic manifests and complete appended
+  gzip members for both valid-read and correction-trace outputs.
+- Restore correction counters and elapsed/input progress, truncate uncommitted
+  output tails, and rapidly skip already committed extracted rows on resume.
+- Add `correction_progress` pipeline log records and a live
+  `correction_progress.tsv` containing throughput, input percentage, ETA,
+  resume-skip percentage, valid-read counts, and temporary-output sizes.
+- Recover safely if interruption occurs between final output renames and final
+  correction-statistics/checkpoint creation.
+
+## 0.1.7 — 2026-06-22
+
+- Parallelize independent Barcode1–Barcode2 UMI correction groups across
+  multiple processes while continuing to use UMI-tools `UMIClusterer`.
+- Bound multiprocessing memory by batching complete groups by unique-UMI count
+  and allowing at most one pending batch per worker.
+- Add `performance.umi_workers`, `umi_batch_size`, and `umi_sqlite_cache_mb` so
+  UMI CPU use and memory can be tuned independently from Cutadapt extraction.
+- Use a bounded, disk-backed disposable SQLite aggregation cache and report
+  worker count, phase timings, group counts, and peak batch size in the log.
+
 ## 0.1.6 — 2026-06-22
 
 - Added resumable extraction using complete appended gzip members and an atomic

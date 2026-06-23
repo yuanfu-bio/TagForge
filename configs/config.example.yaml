@@ -68,6 +68,14 @@ quick_test:
 
 performance:
   threads: 2
+  # Barcode whitelist correction is parallelized by extracted-read chunks.
+  # Omit barcode_workers to use the same value as threads.
+  # barcode_workers: 2
+  # Omit umi_workers to use the same value as threads. Lower it independently
+  # when UMI-tools worker memory, rather than CPU, is the limiting resource.
+  # umi_workers: 2
+  umi_batch_size: 5000
+  umi_sqlite_cache_mb: 64
   chunk_size: 10000
   extraction_preview_reads: 1000
   compression_level: 3
