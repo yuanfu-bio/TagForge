@@ -42,7 +42,12 @@ def deduplicate_umis(counts: Dict[str, int], method: str = "directional", max_di
     return _assign_umis(counts, _umi_clusterer(method), max_distance)
 
 
-MOLECULE_FIELDS = ["barcode1", "barcode2_name", "corrected_umi", "reads_count", "raw_umi_count"]
+def molecule_fields(config: TagForgeConfig):
+    return [
+        config.target_name("barcode1"),
+        f"{config.target_name('barcode2')}_name",
+        "corrected_umi", "reads_count", "raw_umi_count",
+    ]
 
 
 def _group_batches(cursor: Iterable[tuple], batch_umis: int) -> Iterator[list]:
@@ -114,6 +119,10 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
     executor = None
     requested_workers = config.umi_workers or config.threads
     workers = requested_workers
+    barcode1_col = config.target_name("barcode1")
+    barcode2_name_col = f"{config.target_name('barcode2')}_name"
+    umi_col = config.target_name("umi")
+    fields = molecule_fields(config)
     try:
         # This database is a disposable aggregation scratch file. Keeping its
         # cache bounded and temporary data on disk avoids competing with UMI
@@ -129,7 +138,7 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         batch = []
         reads = 0
         for row in open_tsv(source):
-            batch.append((row["barcode1"], row["barcode2_name"], row["umi"], 1))
+            batch.append((row[barcode1_col], row[barcode2_name_col], row[umi_col], 1))
             reads += 1
             if len(batch) >= config.chunk_size:
                 connection.executemany(
@@ -175,7 +184,7 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
 
         with atomic_text(output, config.compression_level) as handle:
             writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
-            writer.writerow(MOLECULE_FIELDS)
+            writer.writerow(fields)
 
             def consume(result):
                 nonlocal molecules, groups_processed, raw_umis_processed

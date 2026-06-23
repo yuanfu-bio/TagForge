@@ -89,17 +89,38 @@ The generated input follows the expected convention:
 01_raw/{sample}/{sample}_raw_2.fq.gz
 ```
 
-Paths themselves are configurable and need not use that layout.
+Use `samples.auto` to discover that layout without typing every sample:
+
+```yaml
+samples:
+  auto:
+    raw_dir: 01_raw
+    r1: "{sample}_raw_1.fq.gz"
+    r2: "{sample}_raw_2.fq.gz"
+```
+
+TagForge scans one directory level below `raw_dir`, uses each subdirectory name
+as the sample name, and sorts samples by name for stable runs. The older
+explicit list form is still supported when paths do not follow a shared pattern.
 
 ## Configuration
 
 Start from [`configs/config.example.yaml`](configs/config.example.yaml). A
-segment chooses `R1` or `R2`, a target (`barcode1`, `barcode2`, or `umi`), and
-supports `fixed`, `linker`, or a composition of both. Fixed coordinates in YAML
-are **0-based half-open intervals**: `start: 6, length: 10` extracts `[6, 16)`.
-Linker segments accept `left_linker`, `right_linker`, either one alone, and
-`linker_max_mismatch`. Matching is performed by Cutadapt with full-length
-overlap and indels disabled, so the setting is an absolute substitution count.
+configuration has three sequence modules:
+
+- `barcode1`: the primary barcode role; `name` can be your custom target name,
+  such as `PB`.
+- `barcode2`: the feature/FB barcode role; `name` can be `FB` or any label you
+  prefer.
+- `umi`: UMI segment definitions; `name` labels the concatenated UMI target.
+
+Each segment chooses `R1` or `R2` and supports `fixed`, `linker`, or a
+composition of both. Fixed coordinates in YAML are **0-based half-open
+intervals**: `start: 6, length: 10` extracts `[6, 16)`. Linker segments accept
+`left_linker`, `right_linker`, either one alone, and `linker_max_mismatch`.
+Set the default with top-level `linker.max_mismatch`; individual segments can
+override it. Matching is performed by Cutadapt with full-length overlap and
+indels disabled, so the setting is an absolute substitution count.
 When both linkers are present, TagForge enumerates every Cutadapt-verified left
 and right match (including overlapping occurrences), builds all correctly
 oriented pairs, and selects the pair with the shortest intervening sequence.
@@ -114,15 +135,19 @@ retried with fixed extraction. `start` is always a 0-based coordinate on the
 original R1/R2 sequence. A linker-successful read never enters fixed mode:
 
 ```yaml
-- name: CELL
-  target: barcode1
-  read: R1
-  methods: [linker, fixed]
-  left_linker: AACCT
-  right_linker: TGGCA
-  linker_max_mismatch: 1
-  start: 2       # coordinate on the original read; fallback only
-  length: 8
+linker:
+  max_mismatch: 1
+
+barcode1:
+  name: PB
+  segments:
+    - segment: PB1
+      read: R1
+      methods: [linker, fixed]
+      left_linker: AACCT
+      right_linker: TGGCA
+      start: 2       # coordinate on the original read; fallback only
+      length: 8
 ```
 
 The equivalent compact form is to provide `start` and linker fields together;
@@ -130,8 +155,9 @@ TagForge infers the fallback mode even when `method` contains only one name.
 `method: linker_fixed`, `method: linker+fixed`, and
 `methods: [linker, fixed]` are also accepted explicitly.
 The extracted read-detail table has seven compact columns:
-`read_id`, `barcode1_segments`, `barcode2_segments`, `umi_segments`, `methods`,
-`status`, and `failure_reason`. Segment sequences are comma-separated in
+`read_id`, `{barcode1.name}_segments`, `{barcode2.name}_segments`,
+`{umi.name}_segments`, `methods`, `status`, and `failure_reason`. For example,
+`barcode1.name: PB` produces `PB_segments`. Segment sequences are comma-separated in
 configuration order; `methods` uses one code per configured segment (`L` =
 linker, `F` = fixed, `X` = failed). Combined raw-barcode duplicates, JSON
 syntax, repeated segment names, and repeated method words are not stored.
@@ -190,22 +216,58 @@ resume fast-forward percentage, and both temporary-output sizes. As with
 extraction, the percentage saved in the manifest is preserved during
 fast-forward rather than resetting to zero.
 
-Barcode segments can have independent whitelist and correction controls:
+Barcode segments inherit top-level correction defaults and can override them
+individually:
 
 ```yaml
-correction:
+correction_barcode:
   enabled: true
   allow_shift: true
   max_shift: 1
   allow_mismatch: true
   max_mismatch: 1
+
+barcode1:
+  name: PB
+  segments:
+    - segment: PB1
+      read: R1
+      method: fixed
+      start: 16
+      length: 8
+      whitelist: PB1.txt
+    - segment: PB2
+      read: R1
+      method: fixed
+      start: 30
+      length: 8
+      whitelist: PB2.txt
+      correction:
+        enabled: false
 ```
 
 Correction tries exact, shift, mismatch, and shift-plus-mismatch candidates.
 Candidates are scored by operation count and total edit distance. A tied best
 result pointing to multiple whitelist entries is marked ambiguous and rejected.
-Raw, shifted, and final sequences remain in the trace. Multiple segments of a
-target are concatenated in configuration order.
+Raw, shifted, and final sequences remain in the trace. Multiple segments inside
+`barcode1`, `barcode2`, or `umi` are concatenated in configuration order.
+UMI-tools correction is
+configured separately under `correction_umi`:
+
+```yaml
+correction_umi:
+  method: directional
+  max_distance: 1
+
+umi:
+  name: UMI
+  segments:
+    - segment: UMI1
+      read: R2
+      method: fixed
+      start: 0
+      length: 8
+```
 
 For fixed extraction, `max_shift` reserves bases on both sides of the configured
 interval. With `start: 16`, `length: 8`, and `max_shift: 1`, extraction retains
@@ -238,11 +300,15 @@ tagforge init-config --out 00_config/config.yaml
 tagforge make-slurm --config 00_config/config.yaml --out slurm_jobs \
   --partition compute --account my_lab --qos normal \
   --threads 8 --mem 16G --time 24:00:00 --conda-env tagforge
+sbatch slurm_jobs/tagforge_array.slurm
 ```
 
 `--sample` is repeatable. `--overwrite` ignores successful checkpoints.
 `make-slurm` also accepts `--constraint`, `--gres`, `--nodes`, `--ntasks`,
-`--mail-user`, `--mail-type`, and repeatable `--extra-sbatch` options. Generated
+`--mail-user`, `--mail-type`, and repeatable `--extra-sbatch` options. By
+default it writes one `samples.tsv` plus one Slurm array script. Use
+`--array-limit N` to cap concurrent array tasks, or `--mode per-sample` to
+generate the legacy one-script-per-sample files and `submit_all.sh`. Generated
 jobs activate the requested Conda environment before running TagForge.
 
 ## Outputs
@@ -261,8 +327,9 @@ Each sample gets these directories under `02_output/{sample}`:
 08_tmp/        disk-backed aggregation scratch space
 ```
 
-The matrix rows are final Barcode1 values and columns are antibody names from
-the annotation. Counts are deduplicated corrected UMIs. `00_report/` at the
+The matrix first column is named after `barcode1.name` and contains those final
+barcode values; matrix feature columns are antibody names from the annotation.
+Counts are deduplicated corrected UMIs. `00_report/` at the
 project root contains the batch workbook (`meta` and bulk `counts` sheets) and
 batch HTML overview.
 
@@ -279,7 +346,7 @@ filters, and frozen header rows.
 
 ## UMI and saturation definitions
 
-UMIs are grouped by UMI-tools within each final Barcode1–antibody pair. Directional mode
+UMIs are grouped by UMI-tools within each final `barcode1.name`–antibody pair. Directional mode
 uses an edge from a more abundant UMI `A` to a neighbor `B` when their Hamming
 distance is within the threshold and `count(A) >= 2*count(B)-1`.
 
@@ -324,7 +391,8 @@ matching read IDs.
   receive more frequent progress updates.
 - Lower `compression_level` for faster output on compute-heavy runs.
 - Disable the large correction trace with `output.correction_trace: false`.
-- Split samples into separate Slurm jobs with `make-slurm`.
+- Submit many samples as a Slurm array with `make-slurm`; use
+  `--array-limit` to control concurrent sample jobs.
 
 `performance.threads` and the overriding CLI option `--threads` control the
 number of process workers used for Cutadapt-backed linker extraction,
@@ -394,9 +462,9 @@ linker overlap and substitutions only.
 **Many corrections are ambiguous.** The whitelist entries may be too close for
 the chosen mismatch threshold. Lower `max_mismatch` or redesign the whitelist.
 
-**Can Barcode1, Barcode2, or UMI span both reads?** Yes. Define multiple
-segments in their desired concatenation order; each segment independently
-selects R1 or R2.
+**Can a barcode or UMI span both reads?** Yes. Define multiple segments in their
+desired concatenation order inside `barcode1.segments`, `barcode2.segments`, or
+`umi.segments`; each segment independently selects R1 or R2.
 
 **Why can saturation peak before 100%?** The requested definition measures the
 fraction of observed molecules that are non-singletons. Downsampling changes

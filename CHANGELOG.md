@@ -3,6 +3,23 @@
 Every code-change release increments the patch component of the TagForge
 version. The version is kept in package metadata, the CLI, and pipeline logs.
 
+## 0.1.10 — 2026-06-23
+
+- Add the new grouped configuration layout: `barcode1`, `barcode2`, and `umi`
+  are top-level sequence modules with named `segments`, so segment entries no
+  longer need a hard-coded `target`.
+- Allow custom barcode target names such as `PB` and `FB` while preserving the
+  output roles `barcode1` and `barcode2` for downstream matrix generation.
+- Add top-level `correction_barcode` defaults with per-segment overrides.
+- Add top-level `correction_umi` for UMI-tools method/distance settings and
+  reserve `umi` for UMI segment definitions in the new layout.
+- Add top-level `linker.max_mismatch` as the default linker mismatch setting,
+  still overridable by individual segments.
+- Add `samples.auto` to discover samples from one-level raw-data directories
+  such as `01_raw/{sample}/{sample}_raw_1.fq.gz`.
+- Make `make-slurm` default to one Slurm array script plus `samples.tsv`, with
+  `--mode per-sample` retaining the previous script-per-sample output.
+
 ## 0.1.9 — 2026-06-23
 
 - Parallelize barcode whitelist correction across extracted-read chunks using

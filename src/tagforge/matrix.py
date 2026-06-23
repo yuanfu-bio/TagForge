@@ -9,7 +9,15 @@ from .config import TagForgeConfig
 from .io_utils import atomic_text, open_tsv, sample_dirs
 
 
-def matrix_from_molecules(source: Path, output: Path, compression_level: int = 3):
+def matrix_from_molecules(
+    source: Path,
+    output: Path,
+    compression_level: int = 3,
+    *,
+    barcode_col: str = "barcode1",
+    feature_col: str = "barcode2_name",
+    row_header: str = "Barcode1",
+):
     db = Path(str(output) + ".sqlite3.tmp")
     db.unlink(missing_ok=True)
     con = sqlite3.connect(db)
@@ -17,7 +25,7 @@ def matrix_from_molecules(source: Path, output: Path, compression_level: int = 3
         con.execute("CREATE TABLE m (b1 TEXT, b2 TEXT, n INTEGER, PRIMARY KEY(b1,b2)) WITHOUT ROWID")
         batch = []
         for row in open_tsv(source):
-            batch.append((row["barcode1"], row["barcode2_name"], 1))
+            batch.append((row[barcode_col], row[feature_col], 1))
             if len(batch) >= 100000:
                 con.executemany("INSERT INTO m VALUES(?,?,?) ON CONFLICT DO UPDATE SET n=n+1", batch); con.commit(); batch.clear()
         if batch:
@@ -25,7 +33,7 @@ def matrix_from_molecules(source: Path, output: Path, compression_level: int = 3
         features = [x[0] for x in con.execute("SELECT DISTINCT b2 FROM m ORDER BY b2")]
         with atomic_text(output, compression_level) as handle:
             writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
-            writer.writerow(["Barcode1"] + features)
+            writer.writerow([row_header] + features)
             cursor = con.execute("SELECT b1,b2,n FROM m ORDER BY b1,b2")
             current = None; values = {}
             for b1, b2, n in cursor:
@@ -44,5 +52,9 @@ def matrix_sample(config: TagForgeConfig, sample_name: str):
     dirs = sample_dirs(config.output_dir, sample_name)
     source = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
     output = dirs["matrix"] / f"{sample_name}.raw_count_matrix.tsv.gz"
-    return output, matrix_from_molecules(source, output, config.compression_level)
-
+    return output, matrix_from_molecules(
+        source, output, config.compression_level,
+        barcode_col=config.target_name("barcode1"),
+        feature_col=f"{config.target_name('barcode2')}_name",
+        row_header=config.target_name("barcode1"),
+    )

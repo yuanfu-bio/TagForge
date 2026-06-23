@@ -39,6 +39,8 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
     point_path = dirs["downsample"] / f"{sample_name}.optimal_saturation_point.tsv"
     optimal_detail = dirs["detail"] / f"{sample_name}.optimal_saturation_molecule_detail.tsv.gz"
     optimal_matrix = dirs["matrix"] / f"{sample_name}.optimal_saturation_count_matrix.tsv.gz"
+    barcode1_col = config.target_name("barcode1")
+    barcode2_name_col = f"{config.target_name('barcode2')}_name"
     metric_rows = []
     for ratio in config.downsample_ratios:
         for repeat in range(1, config.downsample_repeats + 1):
@@ -59,12 +61,16 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
     ratio, repeat = float(optimal["downsample_ratio"]), int(optimal["repeat"])
     rng = random.Random(_seed(config.downsample_seed, sample_name, ratio, repeat))
     with atomic_text(optimal_detail, config.compression_level) as handle:
-        fields = ["barcode1", "barcode2_name", "corrected_umi", "reads_count_at_optimal_downsample"]
+        fields = [barcode1_col, barcode2_name_col, "corrected_umi", "reads_count_at_optimal_downsample"]
         writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n"); writer.writeheader()
         for row in open_tsv(source):
             count = _binomial(int(row["reads_count"]), ratio, rng)
             if count:
-                writer.writerow({"barcode1": row["barcode1"], "barcode2_name": row["barcode2_name"],
+                writer.writerow({barcode1_col: row[barcode1_col], barcode2_name_col: row[barcode2_name_col],
                                  "corrected_umi": row["corrected_umi"], "reads_count_at_optimal_downsample": count})
-    matrix_from_molecules(optimal_detail, optimal_matrix, config.compression_level)
+    matrix_from_molecules(
+        optimal_detail, optimal_matrix, config.compression_level,
+        barcode_col=barcode1_col, feature_col=barcode2_name_col,
+        row_header=barcode1_col,
+    )
     return [metrics_path, point_path, optimal_detail, optimal_matrix], optimal

@@ -214,10 +214,15 @@ def extract_segment(sequence: str, segment: SegmentConfig) -> SegmentExtractionR
     )
 
 
-EXTRACT_FIELDS = [
-    "read_id", "barcode1_segments", "barcode2_segments", "umi_segments",
-    "methods", "status", "failure_reason",
-]
+EXTRACT_TRAILING_FIELDS = ["methods", "status", "failure_reason"]
+
+
+def extract_fields(config: TagForgeConfig):
+    return [
+        "read_id", config.segment_column("barcode1"),
+        config.segment_column("barcode2"), config.segment_column("umi"),
+        *EXTRACT_TRAILING_FIELDS,
+    ]
 
 EXTRACTION_STATS_FIELDS = [
     "sample", "segment", "target", "read", "configured_mode", "total_reads",
@@ -232,7 +237,12 @@ EXTRACTION_STATS_FIELDS = [
 ]
 
 
-def _extract_record(record, segments):
+def _extract_record(record, segments, segment_columns=None):
+    segment_columns = segment_columns or {
+        "barcode1": "barcode1_segments",
+        "barcode2": "barcode2_segments",
+        "umi": "umi_segments",
+    }
     by_target = {"barcode1": {}, "barcode2": {}, "umi": {}}
     methods = {}
     runtime_stats = {}
@@ -259,9 +269,9 @@ def _extract_record(record, segments):
         "read_id": record.read_id,
         # Comma-separated segment values and method codes follow config order.
         # DNA/IUPAC sequences cannot contain commas, so JSON adds no value here.
-        "barcode1_segments": ",".join(by_target["barcode1"].values()),
-        "barcode2_segments": ",".join(by_target["barcode2"].values()),
-        "umi_segments": ",".join(by_target["umi"].values()),
+        segment_columns["barcode1"]: ",".join(by_target["barcode1"].values()),
+        segment_columns["barcode2"]: ",".join(by_target["barcode2"].values()),
+        segment_columns["umi"]: ",".join(by_target["umi"].values()),
         "methods": "".join(
             {"fixed": "F", "linker": "L", "failed": "X"}.get(method, "?")
             for method in methods.values()
@@ -319,6 +329,12 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     progress_output = dirs["logs"] / f"{sample_name}.extraction_progress.tsv"
     resume_path = dirs["checkpoint"] / f"{sample_name}.extract.resume.json"
     tmp_output = output.with_name(output.name + ".tmp")
+    fields = extract_fields(config)
+    segment_columns = {
+        "barcode1": config.segment_column("barcode1"),
+        "barcode2": config.segment_column("barcode2"),
+        "umi": config.segment_column("umi"),
+    }
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
     started = time.monotonic()
     totals = {"total_reads": 0, "extracted_reads": 0}
@@ -330,7 +346,7 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
 
     def save_resume():
         state = {
-            "schema": 1, "tagforge_version": __version__, "fingerprint": fingerprint,
+            "schema": 2, "tagforge_version": __version__, "fingerprint": fingerprint,
             "reads_completed": totals["total_reads"],
             "extracted_reads": totals["extracted_reads"],
             "safe_output_bytes": tmp_output.stat().st_size,
@@ -345,7 +361,7 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     resumed = False
     if resume_path.exists() and resume:
         state = json.loads(resume_path.read_text(encoding="utf-8"))
-        if state.get("schema") != 1 or state.get("tagforge_version") != __version__ or state.get("fingerprint") != fingerprint:
+        if state.get("schema") != 2 or state.get("tagforge_version") != __version__ or state.get("fingerprint") != fingerprint:
             raise ConfigError(
                 f"Extraction resume state does not match current inputs/config: {resume_path}. "
                 "Use --overwrite to restart safely."
@@ -373,7 +389,7 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             )
         tmp_output.unlink(missing_ok=True); resume_path.unlink(missing_ok=True)
         with gzip.open(tmp_output, "wt", encoding="utf-8", newline="", compresslevel=config.compression_level) as initial:
-            csv.DictWriter(initial, fieldnames=EXTRACT_FIELDS, delimiter="\t", lineterminator="\n").writeheader()
+            csv.DictWriter(initial, fieldnames=fields, delimiter="\t", lineterminator="\n").writeheader()
         save_resume()
     progress_fields = [
         "status", "reads_completed", "input_percent", "elapsed_seconds",
@@ -421,7 +437,7 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     preview_mode = "a" if resumed and preview_output.exists() else "w"
     preview_handle = open(preview_output, preview_mode, encoding="utf-8", newline="")
     preview_writer = csv.DictWriter(
-        preview_handle, fieldnames=EXTRACT_FIELDS, delimiter="\t", lineterminator="\n"
+        preview_handle, fieldnames=fields, delimiter="\t", lineterminator="\n"
     )
     if preview_mode == "w": preview_writer.writeheader()
     preview_handle.flush()
@@ -462,11 +478,15 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                 batch = batch[remaining:]
                 reads_seen += remaining
             if executor is None:
-                extracted = (_extract_record(record, config.segments) for record in batch)
+                extracted = (
+                    _extract_record(record, config.segments, segment_columns)
+                    for record in batch
+                )
             else:
                 map_chunksize = max(1, min(1000, len(batch) // config.threads))
                 extracted = executor.map(
                     _extract_record, batch, repeat(tuple(config.segments), len(batch)),
+                    repeat(segment_columns, len(batch)),
                     chunksize=map_chunksize,
                 )
             with gzip.open(
@@ -474,7 +494,7 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                 compresslevel=config.compression_level,
             ) as handle:
                 writer = csv.DictWriter(
-                    handle, fieldnames=EXTRACT_FIELDS, delimiter="\t", lineterminator="\n"
+                    handle, fieldnames=fields, delimiter="\t", lineterminator="\n"
                 )
                 for row, runtime_stats in extracted:
                     totals["total_reads"] += 1
@@ -539,7 +559,8 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         fixed_attempted = counter["fixed_attempted"]
         total_reads = counter["total_reads"]
         stats_rows.append({
-            "sample": sample_name, "segment": segment.name, "target": segment.target,
+            "sample": sample_name, "segment": segment.name,
+            "target": segment.target_name or segment.target,
             "read": segment.read, "configured_mode": segment.method,
             "total_reads": total_reads, "linker_attempted": linker_attempted,
             "linker_success": counter["linker_success"], "linker_failed": counter["linker_failed"],

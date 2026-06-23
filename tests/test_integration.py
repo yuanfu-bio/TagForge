@@ -53,7 +53,7 @@ class IntegrationTests(unittest.TestCase):
         log = (sample / "00_logs/example.pipeline.log").read_text(encoding="utf-8")
         self.assertIn("backend=cutadapt-python-api", log)
         self.assertIn("workers=2", log)
-        self.assertIn("tagforge\tversion=0.1.9", log)
+        self.assertIn("tagforge\tversion=0.1.10", log)
         self.assertIn("correction_progress", log)
         self.assertIn("correction_summary", log)
         self.assertIn("correction_parallel_start", log)
@@ -64,11 +64,12 @@ class IntegrationTests(unittest.TestCase):
         header = extracted.splitlines()[0]
         self.assertEqual(
             header,
-            "read_id\tbarcode1_segments\tbarcode2_segments\tumi_segments\tmethods\tstatus\tfailure_reason",
+            "read_id\tCELL_segments\tFB_segments\tUMI_segments\tmethods\tstatus\tfailure_reason",
         )
         self.assertIn('read009', extracted)
         self.assertIn("FFF", extracted)
         self.assertNotIn("raw_barcode1", extracted)
+        self.assertNotIn("barcode1_segments", header)
         self.assertNotIn("[", extracted)
         preview = sample / "02_extracted/example.extracted.preview.tsv"
         self.assertTrue(preview.is_file())
@@ -76,7 +77,16 @@ class IntegrationTests(unittest.TestCase):
         progress = sample / "00_logs/example.extraction_progress.tsv"
         self.assertIn("completed\t9\t100.00", progress.read_text(encoding="utf-8"))
         stats = (sample / "02_extracted/example.extraction_stats.tsv").read_text(encoding="utf-8")
-        self.assertIn("CELL\tbarcode1\tR1\tlinker_fixed\t9\t9\t8\t1", stats)
+        self.assertIn("CELL\tCELL\tR1\tlinker_fixed\t9\t9\t8\t1", stats)
+        with gzip.open(sample / "05_detail/example.valid_reads.tsv.gz", "rt", encoding="utf-8") as handle:
+            valid_header = handle.readline().strip()
+        self.assertEqual(valid_header, "read_id\tCELL\tFB_sequence\tFB_name\tUMI\tcorrection_summary")
+        with gzip.open(sample / "05_detail/example.molecule_detail.tsv.gz", "rt", encoding="utf-8") as handle:
+            molecule_header = handle.readline().strip()
+        self.assertEqual(molecule_header, "CELL\tFB_name\tcorrected_umi\treads_count\traw_umi_count")
+        with gzip.open(sample / "04_matrix/example.raw_count_matrix.tsv.gz", "rt", encoding="utf-8") as handle:
+            matrix_header = handle.readline().strip()
+        self.assertTrue(matrix_header.startswith("CELL\t"))
 
         # Commit one three-read gzip member, interrupt, then resume without
         # duplicating the header or completed records.

@@ -5,7 +5,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="tagforge",
-    version="0.1.9",
+    version="0.1.10",
     description="Streaming barcode and UMI processing for paired-end FASTQ libraries",
     packages=find_packages("src"),
     package_dir={"": "src"},

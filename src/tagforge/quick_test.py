@@ -17,8 +17,8 @@ from .logging_utils import sample_logger
 from .umi_correct import deduplicate_umis
 
 
-def _quick_extract(record, segments):
-    row, runtime = _extract_record(record, segments)
+def _quick_extract(record, segments, segment_columns=None):
+    row, runtime = _extract_record(record, segments, segment_columns)
     sequence_stats = {
         "r1_length": len(record.r1_seq), "r2_length": len(record.r2_seq),
         "bases": len(record.r1_seq) + len(record.r2_seq),
@@ -73,6 +73,11 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
     totals = Counter()
     barcode1_top, feature_top = Counter(), Counter()
     umi_groups = defaultdict(Counter)
+    segment_columns = {
+        "barcode1": config.segment_column("barcode1"),
+        "barcode2": config.segment_column("barcode2"),
+        "umi": config.segment_column("umi"),
+    }
     started = time.monotonic()
     sampling_started = time.monotonic()
     selected, reads_scanned = _take_leading_records(
@@ -85,12 +90,18 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
         for index, record in selected:
             handle.write(f"{index}\t{record.read_id}\n")
     if config.threads == 1:
-        extracted = (_quick_extract(record, config.segments) for record in records)
+        extracted = (
+            _quick_extract(record, config.segments, segment_columns)
+            for record in records
+        )
         executor = None
         backend = "serial"
     else:
         executor = ThreadPoolExecutor(max_workers=config.threads)
-        extracted = executor.map(_quick_extract, records, repeat(tuple(config.segments)))
+        extracted = executor.map(
+            _quick_extract, records, repeat(tuple(config.segments)),
+            repeat(segment_columns),
+        )
         backend = "thread"
     try:
         for row, runtime, seq_stats in extracted:
@@ -104,7 +115,7 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
                 for target in ("barcode1", "barcode2", "umi")
             }
             raw_by_target = {
-                target: decode_segment_payload(row[f"{target}_segments"], segments_by_target[target])
+                target: decode_segment_payload(row[segment_columns[target]], segments_by_target[target])
                 for target in ("barcode1", "barcode2", "umi")
             }
             extraction_methods = decode_method_payload(
@@ -205,7 +216,7 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
             if key.startswith("failure_") or key.startswith("correction_"):
                 metric_rows.append({"scope": scope, "metric": key, "value": count[key]})
     for rank, (barcode, count) in enumerate(barcode1_top.most_common(10), 1):
-        metric_rows.append({"scope": "top_barcode1", "metric": f"{rank}:{barcode}", "value": count})
+        metric_rows.append({"scope": f"top_{config.target_name('barcode1')}", "metric": f"{rank}:{barcode}", "value": count})
     for rank, (feature, count) in enumerate(feature_top.most_common(10), 1):
         metric_rows.append({"scope": "top_feature", "metric": f"{rank}:{feature}", "value": count})
     write_tsv(stats_path, ["scope", "metric", "value"], metric_rows)

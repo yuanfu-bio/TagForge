@@ -28,6 +28,7 @@ def _matrix_summary(path: Path):
 
 
 def report_sample(config: TagForgeConfig, sample_name: str):
+    barcode1_name = config.target_name("barcode1")
     dirs = sample_dirs(config.output_dir, sample_name)
     extraction_stats = dirs["extracted"] / f"{sample_name}.extraction_stats.tsv"
     stats = dirs["corrected"] / f"{sample_name}.barcode_correction_stats.tsv"
@@ -45,7 +46,7 @@ def report_sample(config: TagForgeConfig, sample_name: str):
         ["Metric", "Value"], ["Sample", sample_name], ["Total reads", combined.get("total_reads", 0)],
         ["Valid reads", combined.get("valid_reads", 0)], ["Combined valid rate", combined.get("valid_rate", 0)],
         ["Deduplicated molecules", molecule_count], ["Reads supporting molecules", read_count],
-        ["Barcode1 rows", b1_count], ["Features", len(features)],
+        [f"{barcode1_name} rows", b1_count], ["Features", len(features)],
     ]
     feature_rows = [["Feature", "Molecule count"]] + [[k, v] for k, v in features.most_common()]
     sheets = [("Summary", summary), ("Extraction Stats", _rows(extraction_stats)),
@@ -72,7 +73,7 @@ body{{margin:0;background:#07111f;color:#e5edf8;font:15px system-ui}}main{{max-w
 <div class="card"><div class="sub">Total reads</div><div class="value">{int(combined.get('total_reads',0) or 0):,}</div></div>
 <div class="card"><div class="sub">Valid rate</div><div class="value">{valid_rate:.1%}</div></div>
 <div class="card"><div class="sub">Molecules</div><div class="value">{molecule_count:,}</div></div>
-<div class="card"><div class="sub">Barcode1</div><div class="value">{b1_count:,}</div></div></div>
+<div class="card"><div class="sub">{html.escape(barcode1_name)}</div><div class="value">{b1_count:,}</div></div></div>
 <section class="panel"><h2>Cutadapt linker extraction</h2><table><tr><th>Segment</th><th>Mode</th><th>Linker success</th><th>Fixed rescues</th><th>Final success</th></tr>{extraction_rows or '<tr><td colspan="5">No linker segments configured.</td></tr>'}</table></section>
 <section class="panel"><h2>Sequencing saturation</h2><div id="sat" style="height:390px"></div></section>
 <section class="panel"><h2>Top features</h2><table><tr><th>Feature</th><th>Molecules</th></tr>{''.join(f'<tr><td>{html.escape(k)}</td><td>{v:,}</td></tr>' for k,v in features.most_common(25))}</table></section>
@@ -84,7 +85,8 @@ body{{margin:0;background:#07111f;color:#e5edf8;font:15px system-ui}}main{{max-w
 
 def batch_report(config: TagForgeConfig, sample_names):
     out = config.workdir / "00_report"; out.mkdir(parents=True, exist_ok=True)
-    meta = [["sample", "total_reads", "valid_reads", "valid_rate", "molecules", "barcode1_count", "feature_count"]]
+    barcode1_name = config.target_name("barcode1")
+    meta = [["sample", "total_reads", "valid_reads", "valid_rate", "molecules", f"{barcode1_name}_count", "feature_count"]]
     bulk = {}
     all_features = set()
     for sample in sample_names:

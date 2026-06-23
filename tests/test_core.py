@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from tagforge import __version__
 from tagforge.barcode_correct import WhitelistCorrector
-from tagforge.config import CorrectionConfig, SegmentConfig, default_downsample_ratios, load_config
+from tagforge.config import ConfigError, CorrectionConfig, SegmentConfig, default_downsample_ratios, load_config
 from tagforge.downsample import calculate_metrics
 from tagforge.extract import decode_method_payload, decode_segment_payload, extract_segment
 from tagforge.fastq import _physical_position, open_text, paired_fastq, paired_fastq_batches
@@ -28,7 +28,7 @@ class CoreTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
         setup = (root / "setup.py").read_text(encoding="utf-8")
-        self.assertEqual(__version__, "0.1.9")
+        self.assertEqual(__version__, "0.1.10")
         self.assertIn(f'version = "{__version__}"', pyproject)
         self.assertIn(f'version="{__version__}"', setup)
 
@@ -149,7 +149,88 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(ratios[:3], [0.0001, 0.0002, 0.0003])
         self.assertEqual(ratios[-3:], [0.7, 0.8, 0.9])
 
-    def test_config_accepts_composed_extraction(self):
+    def test_config_accepts_grouped_barcode_and_umi_sections(self):
+        with tempfile.TemporaryDirectory() as td:
+            raw = Path(td) / "raw"
+            for sample in ("A-44", "A"):
+                (raw / sample).mkdir(parents=True)
+            config_path = Path(td) / "config.yaml"
+            config_path.write_text("""
+project:
+  workdir: .
+samples:
+  auto:
+    raw_dir: raw
+    r1: "{sample}_raw_1.fq.gz"
+    r2: "{sample}_raw_2.fq.gz"
+barcode2_annotation:
+  fb_info: fb.tsv
+correction_barcode:
+  enabled: true
+  max_shift: 1
+  max_mismatch: 1
+linker:
+  max_mismatch: 1
+correction_umi:
+  method: adjacency
+  max_distance: 2
+barcode1:
+  name: PB
+  segments:
+    - segment: PB1
+      read: R1
+      methods: [linker, fixed]
+      left_linker: GG
+      right_linker: TT
+      start: 2
+      length: 4
+    - segment: PB2
+      read: R1
+      method: fixed
+      start: 8
+      length: 4
+      linker_max_mismatch: 0
+      correction:
+        enabled: false
+barcode2:
+  name: FB
+  segments:
+    - segment: FB
+      read: R2
+      method: fixed
+      start: 0
+      length: 4
+      correction:
+        max_shift: 0
+umi:
+  name: UMI
+  segments:
+    - segment: UMI
+      read: R2
+      method: fixed
+      start: 4
+      length: 4
+      correction:
+        enabled: false
+""", encoding="utf-8")
+            config = load_config(config_path, check_files=False)
+            self.assertEqual([sample.sample for sample in config.samples], ["A", "A-44"])
+            self.assertEqual(config.samples[0].r1, (raw / "A/A_raw_1.fq.gz").resolve())
+            self.assertEqual(config.samples[1].r2, (raw / "A-44/A-44_raw_2.fq.gz").resolve())
+            self.assertEqual([s.name for s in config.segments], ["PB1", "PB2", "FB", "UMI"])
+            self.assertEqual(config.segments[0].method, "linker_fixed")
+            self.assertEqual(config.segments[0].target, "barcode1")
+            self.assertEqual(config.segments[0].target_name, "PB")
+            self.assertEqual(config.segments[0].linker_max_mismatch, 1)
+            self.assertTrue(config.segments[0].correction.enabled)
+            self.assertFalse(config.segments[1].correction.enabled)
+            self.assertEqual(config.segments[1].linker_max_mismatch, 0)
+            self.assertEqual(config.segments[2].target_name, "FB")
+            self.assertEqual(config.segments[2].correction.max_shift, 0)
+            self.assertEqual(config.umi_method, "adjacency")
+            self.assertEqual(config.umi_max_distance, 2)
+
+    def test_config_accepts_legacy_segments(self):
         with tempfile.TemporaryDirectory() as td:
             config_path = Path(td) / "config.yaml"
             config_path.write_text("""
@@ -190,6 +271,46 @@ segments:
             config = load_config(config_path, check_files=False)
             self.assertEqual(config.segments[0].method, "linker_fixed")
 
+    def test_config_auto_samples_reports_missing_fastq(self):
+        with tempfile.TemporaryDirectory() as td:
+            raw = Path(td) / "raw/A"
+            raw.mkdir(parents=True)
+            config_path = Path(td) / "config.yaml"
+            config_path.write_text("""
+project:
+  workdir: .
+samples:
+  auto:
+    raw_dir: raw
+barcode2_annotation:
+  fb_info: fb.tsv
+segments:
+  - name: CELL
+    target: barcode1
+    read: R1
+    method: fixed
+    start: 0
+    length: 4
+    correction:
+      enabled: false
+  - name: FB
+    target: barcode2
+    read: R2
+    method: fixed
+    start: 0
+    length: 4
+    correction:
+      enabled: false
+  - name: UMI
+    target: umi
+    read: R2
+    method: fixed
+    start: 4
+    length: 4
+""", encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "A_raw_1.fq.gz"):
+                load_config(config_path, check_files=True)
+
     def test_slurm_scheduler_options(self):
         with tempfile.TemporaryDirectory() as td:
             config = SimpleNamespace(
@@ -203,14 +324,33 @@ segments:
                 skip_quick_test=True,
                 extra_sbatch=["--exclusive"],
             )
-            script = files[0].read_text(encoding="utf-8")
+            self.assertEqual([path.name for path in files], ["samples.tsv", "tagforge_array.slurm"])
+            self.assertIn("1\ts1", files[0].read_text(encoding="utf-8"))
+            script = files[1].read_text(encoding="utf-8")
+            self.assertIn("#SBATCH --array=1-1", script)
             self.assertIn("#SBATCH --partition=compute", script)
             self.assertIn("#SBATCH --account=lab", script)
             self.assertIn("#SBATCH --cpus-per-task=12", script)
             self.assertIn("#SBATCH --exclusive", script)
             self.assertIn("conda activate tagforge", script)
+            self.assertIn('sample=$(awk -v i="$SLURM_ARRAY_TASK_ID"', script)
+            self.assertIn('--sample "$sample"', script)
             self.assertIn("--threads 12", script)
             self.assertIn("--skip-quick-test", script)
+
+    def test_slurm_per_sample_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = SimpleNamespace(
+                samples=[SimpleNamespace(sample="s1"), SimpleNamespace(sample="s2")],
+                path=Path(td) / "config.yaml",
+            )
+            files = make_slurm(
+                config, Path(td) / "jobs", 4, "8G", "01:00:00",
+                mode="per-sample", array_limit=None,
+            )
+            self.assertEqual([path.name for path in files], ["s1.slurm", "s2.slurm", "submit_all.sh"])
+            self.assertIn("--sample s1", files[0].read_text(encoding="utf-8"))
+            self.assertIn("sbatch", files[-1].read_text(encoding="utf-8"))
 
     def test_paired_fastq(self):
         with tempfile.TemporaryDirectory() as td:

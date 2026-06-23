@@ -4,7 +4,7 @@ from __future__ import annotations
 import gzip
 from pathlib import Path
 
-ROOT = Path(__file__).parent / "small_fastq"
+ROOT = Path(__file__).parent / "small_fastq" / "example"
 ROOT.mkdir(parents=True, exist_ok=True)
 
 # CELL + linker in R1; six-base UMI + six-base feature in R2.

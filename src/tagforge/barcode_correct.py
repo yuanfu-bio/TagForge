@@ -162,6 +162,13 @@ def _merge_counter_maps(target, source):
         target[key].update(value)
 
 
+def _target_display(config, role: str) -> str:
+    for segment in config.segments:
+        if segment.target == role:
+            return segment.target_name or role
+    return role
+
+
 def _correct_batch(batch, config, correctors, annotation):
     counters = {
         segment.name: Counter() for segment in config.segments if segment.target != "umi"
@@ -194,7 +201,15 @@ def _correct_batch_worker(batch):
 TRACE_FIELDS = ["read_id", "segment_name", "target_type", "raw_sequence", "shifted_sequence",
                 "corrected_sequence", "whitelist_hit", "correction_status", "shift_distance",
                 "mismatch_distance", "correction_type"]
-VALID_FIELDS = ["read_id", "barcode1", "barcode2_sequence", "barcode2_name", "umi", "correction_summary"]
+
+
+def valid_fields(config: TagForgeConfig):
+    return [
+        "read_id", config.target_name("barcode1"),
+        f"{config.target_name('barcode2')}_sequence",
+        f"{config.target_name('barcode2')}_name",
+        config.target_name("umi"), "correction_summary",
+    ]
 
 
 def _correction_fingerprint(config: TagForgeConfig, source: Path) -> str:
@@ -211,8 +226,13 @@ def _correction_fingerprint(config: TagForgeConfig, source: Path) -> str:
 
 def _correct_row(row, config, correctors, annotation, counters, summary):
     summary["total_reads"] += 1
+    segment_columns = {
+        "barcode1": config.segment_column("barcode1"),
+        "barcode2": config.segment_column("barcode2"),
+        "umi": config.segment_column("umi"),
+    }
     required = {
-        "read_id", "barcode1_segments", "barcode2_segments", "umi_segments",
+        "read_id", *segment_columns.values(),
         "methods", "status",
     }
     missing = required - set(row)
@@ -228,7 +248,7 @@ def _correct_row(row, config, correctors, annotation, counters, summary):
     extraction_methods = decode_method_payload(row["methods"], config.segments)
     values = {}
     trace_rows = []
-    for target, col in (("barcode1", "barcode1_segments"), ("barcode2", "barcode2_segments")):
+    for target, col in (("barcode1", segment_columns["barcode1"]), ("barcode2", segment_columns["barcode2"])):
         target_segments = [segment for segment in config.segments if segment.target == target]
         raw_values = decode_segment_payload(row[col], target_segments)
         corrected_values = []
@@ -258,7 +278,7 @@ def _correct_row(row, config, correctors, annotation, counters, summary):
                 count["invalid_reads"] += 1
             trace_rows.append({
                 "read_id": row["read_id"], "segment_name": segment.name,
-                "target_type": target, "raw_sequence": result.raw_sequence,
+                "target_type": segment.target_name or target, "raw_sequence": result.raw_sequence,
                 "shifted_sequence": result.shifted_sequence,
                 "corrected_sequence": result.corrected_sequence,
                 "whitelist_hit": str(result.success).lower(),
@@ -269,7 +289,7 @@ def _correct_row(row, config, correctors, annotation, counters, summary):
             })
         values[target] = "".join(corrected_values) if all(corrected_values) else ""
     umi_segments = [segment for segment in config.segments if segment.target == "umi"]
-    umi_values = decode_segment_payload(row["umi_segments"], umi_segments)
+    umi_values = decode_segment_payload(row[segment_columns["umi"]], umi_segments)
     umi = "".join(umi_values.get(segment.name, "") for segment in umi_segments)
     fb_name = annotation.get(values["barcode2"], "")
     if values["barcode1"]:
@@ -279,9 +299,10 @@ def _correct_row(row, config, correctors, annotation, counters, summary):
     if values["barcode1"] and fb_name and umi and "N" not in umi:
         summary["combined_valid"] += 1
         return {
-            "read_id": row["read_id"], "barcode1": values["barcode1"],
-            "barcode2_sequence": values["barcode2"], "barcode2_name": fb_name,
-            "umi": umi, "correction_summary": "valid",
+            "read_id": row["read_id"], config.target_name("barcode1"): values["barcode1"],
+            f"{config.target_name('barcode2')}_sequence": values["barcode2"],
+            f"{config.target_name('barcode2')}_name": fb_name,
+            config.target_name("umi"): umi, "correction_summary": "valid",
         }, trace_rows
     return None, trace_rows
 
@@ -291,7 +312,7 @@ def _correction_stats(config, counters, summary):
     total = summary["total_reads"]
     for segment in (s for s in config.segments if s.target != "umi"):
         c = counters[segment.name]
-        row = {"scope": segment.name, "target_type": segment.target, "total_reads": total,
+        row = {"scope": segment.name, "target_type": segment.target_name or segment.target, "total_reads": total,
                "extracted_reads": c["extracted_reads"], "valid_reads": c["valid_reads"], "invalid_reads": c["invalid_reads"],
                "valid_rate": c["valid_reads"] / total if total else 0,
                "exact_count": c["exact"], "mismatch_only_count": c["mismatch_only"],
@@ -311,8 +332,8 @@ def _correction_stats(config, counters, summary):
                 row[f"shift_right_{i}_count"] = c[f"shift_right_{i}"]
         stat_rows.append(row)
     stat_rows.extend([
-        {"scope": "final_barcode1", "target_type": "barcode1", "total_reads": total, "valid_reads": summary["barcode1_valid"], "valid_rate": summary["barcode1_valid"] / total if total else 0},
-        {"scope": "final_barcode2", "target_type": "barcode2", "total_reads": total, "valid_reads": summary["barcode2_valid"], "valid_rate": summary["barcode2_valid"] / total if total else 0},
+        {"scope": f"final_{config.target_name('barcode1')}", "target_type": _target_display(config, "barcode1"), "total_reads": total, "valid_reads": summary["barcode1_valid"], "valid_rate": summary["barcode1_valid"] / total if total else 0},
+        {"scope": f"final_{config.target_name('barcode2')}", "target_type": _target_display(config, "barcode2"), "total_reads": total, "valid_reads": summary["barcode2_valid"], "valid_rate": summary["barcode2_valid"] / total if total else 0},
         {"scope": "combined", "target_type": "all", "total_reads": total, "valid_reads": summary["combined_valid"], "valid_rate": summary["combined_valid"] / total if total else 0},
     ])
     all_fields = ["scope", "target_type", "total_reads", "extracted_reads", "valid_reads", "invalid_reads", "valid_rate",
@@ -325,7 +346,11 @@ def _correction_stats(config, counters, summary):
             "linker_barcode_valid_rate", "fixed_extracted_count", "fixed_barcode_valid_count",
             "fixed_barcode_valid_rate",
         )}
-        for row in stat_rows if row.get("scope") not in {"final_barcode1", "final_barcode2", "combined"}
+        for row in stat_rows if row.get("scope") not in {
+            f"final_{config.target_name('barcode1')}",
+            f"final_{config.target_name('barcode2')}",
+            "combined",
+        }
     ]
     return all_fields + dynamic, stat_rows, result_summary
 
@@ -361,10 +386,11 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     requested_workers = config.barcode_workers or config.threads
     workers = requested_workers
     executor = None
+    fields = valid_fields(config)
 
     def save_resume():
         state = {
-            "schema": 1, "tagforge_version": __version__, "fingerprint": fingerprint,
+            "schema": 2, "tagforge_version": __version__, "fingerprint": fingerprint,
             "trace_enabled": config.trace_enabled,
             "reads_completed": summary["total_reads"],
             "safe_valid_bytes": valid_tmp.stat().st_size,
@@ -393,7 +419,7 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     if resume and resume_path.exists():
         state = json.loads(resume_path.read_text(encoding="utf-8"))
         if (
-            state.get("schema") != 1
+            state.get("schema") != 2
             or state.get("tagforge_version") != __version__
             or state.get("fingerprint") != fingerprint
             or bool(state.get("trace_enabled")) != config.trace_enabled
@@ -428,7 +454,7 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             valid_tmp, "wt", encoding="utf-8", newline="", compresslevel=config.compression_level
         ) as handle:
             csv.DictWriter(
-                handle, fieldnames=VALID_FIELDS, delimiter="\t", lineterminator="\n"
+                handle, fieldnames=fields, delimiter="\t", lineterminator="\n"
             ).writeheader()
         if config.trace_enabled:
             with gzip.open(
@@ -494,7 +520,7 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             compresslevel=config.compression_level,
         ) as valid_handle:
             valid_writer = csv.DictWriter(
-                valid_handle, fieldnames=VALID_FIELDS, delimiter="\t", lineterminator="\n"
+                valid_handle, fieldnames=fields, delimiter="\t", lineterminator="\n"
             )
             valid_writer.writerows(valid_rows)
         if config.trace_enabled:

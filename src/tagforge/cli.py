@@ -19,53 +19,62 @@ project:
   workdir: ..
   output_dir: 02_output
 samples:
-  - sample: example
-    r1: examples/small_fastq/example_raw_1.fq.gz
-    r2: examples/small_fastq/example_raw_2.fq.gz
+  auto:
+    raw_dir: examples/small_fastq
+    r1: "{sample}_raw_1.fq.gz"
+    r2: "{sample}_raw_2.fq.gz"
 barcode2_annotation:
   fb_info: examples/FB_info.tsv
   id_column: FB_ID
   sequence_column: sequence
   name_column: antibody_name
-segments:
-  # `methods: [linker, fixed]` means linker-first with fixed fallback. The
-  # fixed start is always relative to the original read.
-  - name: CELL
-    target: barcode1
-    read: R1
-    methods: [linker, fixed]
-    right_linker: AGGTC
-    start: 0
-    length: 8
-    whitelist: examples/CELL_WL.txt
-    correction:
-      enabled: true
-      max_shift: 1
-      max_mismatch: 1
-      allow_shift: true
-      allow_mismatch: true
-  - name: UMI
-    target: umi
-    read: R2
-    method: fixed
-    start: 0
-    length: 6
-  - name: FB
-    target: barcode2
-    read: R2
-    method: fixed
-    start: 6
-    length: 6
-    whitelist: examples/FB_WL.txt
-    correction:
-      enabled: true
-      max_shift: 0
-      max_mismatch: 1
-      allow_shift: false
-      allow_mismatch: true
-umi:
-  correction_method: directional
+correction_barcode:
+  enabled: true
+  max_shift: 1
+  max_mismatch: 1
+  allow_shift: true
+  allow_mismatch: true
+linker:
+  max_mismatch: 0
+correction_umi:
+  method: directional
   max_distance: 1
+# barcode1/barcode2/umi are output roles; name is the custom target name shown
+# in extraction stats, correction trace, and QC logs.
+barcode1:
+  name: CELL
+  segments:
+    # `methods: [linker, fixed]` means linker-first with fixed fallback. The
+    # fixed start is always relative to the original read.
+    - segment: CELL
+      read: R1
+      methods: [linker, fixed]
+      right_linker: AGGTC
+      start: 0
+      length: 8
+      whitelist: examples/CELL_WL.txt
+barcode2:
+  name: FB
+  segments:
+    - segment: FB
+      read: R2
+      method: fixed
+      start: 6
+      length: 6
+      whitelist: examples/FB_WL.txt
+      correction:
+        max_shift: 0
+        allow_shift: false
+umi:
+  name: UMI
+  segments:
+    - segment: UMI
+      read: R2
+      method: fixed
+      start: 0
+      length: 6
+      correction:
+        enabled: false
 downsample:
   enabled: true
   ratios: auto
@@ -122,7 +131,7 @@ def parser():
     validate.add_argument("--config", required=True)
     init = commands.add_parser("init-config", help="Write an example configuration")
     init.add_argument("--out", required=True); init.add_argument("--force", action="store_true")
-    slurm = commands.add_parser("make-slurm", help="Generate one Slurm job per sample")
+    slurm = commands.add_parser("make-slurm", help="Generate Slurm scripts for one or many samples")
     slurm.add_argument("--config", required=True); slurm.add_argument("--out", required=True)
     slurm.add_argument("--threads", type=int, default=8); slurm.add_argument("--mem", default="16G"); slurm.add_argument("--time", default="24:00:00")
     slurm.add_argument("--partition"); slurm.add_argument("--account"); slurm.add_argument("--qos")
@@ -132,6 +141,8 @@ def parser():
     slurm.add_argument("--conda-env", default="tagforge")
     slurm.add_argument("--skip-quick-test", action="store_true", help="Disable quick-test in generated jobs")
     slurm.add_argument("--extra-sbatch", action="append", default=[], help="Additional raw #SBATCH option; repeatable")
+    slurm.add_argument("--mode", choices=("array", "per-sample"), default="array", help="Slurm output style")
+    slurm.add_argument("--array-limit", type=int, default=None, help="Limit concurrent Slurm array tasks")
     return root
 
 
@@ -165,9 +176,14 @@ def main(argv=None):
                 constraint=args.constraint, gres=args.gres, nodes=args.nodes,
                 ntasks=args.ntasks, mail_user=args.mail_user, mail_type=args.mail_type,
                 conda_env=args.conda_env, skip_quick_test=args.skip_quick_test,
-                extra_sbatch=args.extra_sbatch,
+                extra_sbatch=args.extra_sbatch, mode=args.mode,
+                array_limit=args.array_limit,
             )
-            print(f"Generated {len(files)-1} Slurm jobs and {files[-1]}"); return 0
+            if args.mode == "array":
+                print(f"Generated Slurm array script: {files[-1]} with samples table {files[0]}")
+            else:
+                print(f"Generated {len(files)-1} Slurm jobs and {files[-1]}")
+            return 0
         names = _selected(config, args.sample)
         if args.threads is not None:
             if args.threads < 1:

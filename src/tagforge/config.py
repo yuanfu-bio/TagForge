@@ -33,6 +33,7 @@ class SegmentConfig:
     method: str
     length: int
     start: Optional[int] = None
+    target_name: Optional[str] = None
     left_linker: Optional[str] = None
     right_linker: Optional[str] = None
     linker_max_mismatch: int = 0
@@ -85,6 +86,15 @@ class TagForgeConfig:
                 return sample
         raise ConfigError(f"Sample not found in configuration: {name}")
 
+    def target_name(self, role: str) -> str:
+        for segment in self.segments:
+            if segment.target == role:
+                return segment.target_name or role
+        return role
+
+    def segment_column(self, role: str) -> str:
+        return f"{self.target_name(role)}_segments"
+
 
 def _read_yaml(path: Path) -> Dict[str, Any]:
     text = path.read_text(encoding="utf-8")
@@ -106,6 +116,212 @@ def _resolve(base: Path, value: Any) -> Path:
     return path if path.is_absolute() else (base / path).resolve()
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "on", "1"}:
+            return True
+        if normalized in {"false", "no", "off", "0"}:
+            return False
+    return bool(value)
+
+
+def _correction_from_mapping(raw: Dict[str, Any]) -> CorrectionConfig:
+    return CorrectionConfig(
+        enabled=_as_bool(raw.get("enabled", True)),
+        max_shift=int(raw.get("max_shift", 1)),
+        max_mismatch=int(raw.get("max_mismatch", 1)),
+        allow_shift=_as_bool(raw.get("allow_shift", True)),
+        allow_mismatch=_as_bool(raw.get("allow_mismatch", True)),
+    )
+
+
+def _merge_correction(default: CorrectionConfig, override: Dict[str, Any] | None) -> CorrectionConfig:
+    if not override:
+        return default
+    return CorrectionConfig(
+        enabled=_as_bool(override.get("enabled", default.enabled)),
+        max_shift=int(override.get("max_shift", default.max_shift)),
+        max_mismatch=int(override.get("max_mismatch", default.max_mismatch)),
+        allow_shift=_as_bool(override.get("allow_shift", default.allow_shift)),
+        allow_mismatch=_as_bool(override.get("allow_mismatch", default.allow_mismatch)),
+    )
+
+
+def _requested_methods(method_value: Any, segment_name: str) -> set[str]:
+    if isinstance(method_value, list):
+        requested = {str(value).strip().lower() for value in method_value}
+    elif method_value is None:
+        requested = set()
+    else:
+        normalized = str(method_value).lower().replace("linker_fixed", "linker+fixed")
+        for separator in (",", "|", "->"):
+            normalized = normalized.replace(separator, "+")
+        requested = {value.strip() for value in normalized.split("+") if value.strip()}
+    unknown = requested - {"fixed", "linker"}
+    if unknown:
+        raise ConfigError(
+            f"Segment {segment_name}: unsupported extraction method(s): "
+            + ", ".join(sorted(unknown))
+        )
+    return requested
+
+
+def _parse_segment(
+    item: Dict[str, Any],
+    *,
+    target: str,
+    target_name: str,
+    workdir: Path,
+    default_correction: CorrectionConfig,
+    default_linker_max_mismatch: int,
+    seen_segments: set[str],
+) -> SegmentConfig:
+    name = str(item.get("segment", item.get("name", "")))
+    read = str(item.get("read", "")).upper()
+    method_value = item.get("methods", item.get("method"))
+    if not name or name in seen_segments:
+        raise ConfigError(f"Segment names must be present and unique: {name!r}")
+    if target not in {"barcode1", "barcode2", "umi"}:
+        raise ConfigError(
+            f"Segment {name}: internal target role must be barcode1, barcode2, or umi"
+        )
+    if read not in {"R1", "R2"}:
+        raise ConfigError(f"Segment {name}: read must be R1 or R2")
+    try:
+        length = int(item["length"])
+    except (KeyError, TypeError, ValueError):
+        raise ConfigError(f"Segment {name}: length must be a positive integer") from None
+    if length <= 0:
+        raise ConfigError(f"Segment {name}: length must be positive")
+    start = item.get("start")
+    left = item.get("left_linker") or None
+    right = item.get("right_linker") or None
+    requested = _requested_methods(method_value, name)
+    # Presence of coordinates/linkers is itself an explicit method declaration.
+    # This allows either ``methods: [linker, fixed]`` or the compact form of
+    # specifying linker fields and ``start`` together.
+    use_fixed = "fixed" in requested or start is not None
+    use_linker = "linker" in requested or bool(left or right)
+    if not use_fixed and not use_linker:
+        raise ConfigError(f"Segment {name}: specify fixed coordinates, linker sequence(s), or both")
+    if use_fixed and (start is None or int(start) < 0):
+        raise ConfigError(f"Segment {name}: fixed extraction requires a 0-based start >= 0")
+    if use_linker and not left and not right:
+        raise ConfigError(f"Segment {name}: linker extraction requires left_linker and/or right_linker")
+    method = "linker_fixed" if use_linker and use_fixed else "linker" if use_linker else "fixed"
+    correction_default = (
+        CorrectionConfig(False, 0, 0, False, False)
+        if target == "umi" else default_correction
+    )
+    correction = _merge_correction(correction_default, item.get("correction") or {})
+    whitelist = item.get("whitelist")
+    seen_segments.add(name)
+    return SegmentConfig(
+        name=name, target=target, read=read, method=method, length=length,
+        start=int(start) if start is not None else None,
+        target_name=target_name,
+        left_linker=str(left).upper() if left else None,
+        right_linker=str(right).upper() if right else None,
+        linker_max_mismatch=int(item.get("linker_max_mismatch", default_linker_max_mismatch)),
+        whitelist=_resolve(workdir, whitelist) if whitelist else None,
+        correction=correction,
+    )
+
+
+def _barcode_group_role_and_name(group: Dict[str, Any]) -> tuple[str, str]:
+    role_keys = [key for key in ("barcode1", "barcode2") if key in group]
+    if len(role_keys) == 1:
+        role = role_keys[0]
+        name = str(group[role] or "").strip()
+    elif "role" in group:
+        role = str(group["role"]).strip().lower()
+        name = str(group.get("name", group.get("target", role))).strip()
+    else:
+        raise ConfigError(
+            "Each barcode group must specify 'barcode1: NAME', 'barcode2: NAME', "
+            "or both 'role' and 'name'."
+        )
+    if role not in {"barcode1", "barcode2"}:
+        raise ConfigError("Barcode group role must be barcode1 or barcode2")
+    if not name:
+        raise ConfigError(f"Barcode group {role} requires a non-empty name")
+    return role, name
+
+
+def _section_name_and_segments(role: str, section: Any) -> tuple[str, list[Any]]:
+    if isinstance(section, dict):
+        name = str(section.get("name", section.get("target", role))).strip()
+        segments = section.get("segments")
+    elif isinstance(section, list):
+        name = role
+        segments = section
+    else:
+        raise ConfigError(
+            f"'{role}' must be either a list of segments or a mapping with "
+            "'name' and 'segments'."
+        )
+    if not name:
+        raise ConfigError(f"'{role}.name' must not be empty")
+    if not isinstance(segments, list) or not segments:
+        raise ConfigError(f"'{role}' requires a non-empty 'segments' list")
+    return name, segments
+
+
+def _format_sample_template(template: str, sample: str, key: str) -> str:
+    try:
+        return template.format(sample=sample)
+    except KeyError as exc:
+        raise ConfigError(
+            f"samples.auto.{key} contains unsupported template field {{{exc.args[0]}}}; "
+            "only {sample} is supported"
+        ) from None
+
+
+def _parse_samples(samples_raw: Any, workdir: Path) -> List[SampleConfig]:
+    samples: List[SampleConfig] = []
+    seen_samples = set()
+    if isinstance(samples_raw, list):
+        if not samples_raw:
+            raise ConfigError("'samples' must be a non-empty list or an auto-discovery mapping")
+        for item in samples_raw:
+            if not isinstance(item, dict) or not item.get("sample"):
+                raise ConfigError("Each sample requires sample, r1, and r2 fields")
+            name = str(item["sample"])
+            if name in seen_samples:
+                raise ConfigError(f"Duplicate sample name: {name}")
+            seen_samples.add(name)
+            samples.append(SampleConfig(
+                name, _resolve(workdir, item.get("r1")), _resolve(workdir, item.get("r2"))
+            ))
+        return samples
+    if isinstance(samples_raw, dict) and "auto" in samples_raw:
+        auto = samples_raw.get("auto")
+        if not isinstance(auto, dict):
+            raise ConfigError("'samples.auto' must be a mapping")
+        raw_dir = _resolve(workdir, auto.get("raw_dir", "01_raw"))
+        if not raw_dir.is_dir():
+            raise ConfigError(f"samples.auto.raw_dir does not exist or is not a directory: {raw_dir}")
+        r1_template = str(auto.get("r1", "{sample}_raw_1.fq.gz"))
+        r2_template = str(auto.get("r2", "{sample}_raw_2.fq.gz"))
+        for sample_dir in sorted((p for p in raw_dir.iterdir() if p.is_dir()), key=lambda p: p.name):
+            name = sample_dir.name
+            if name in seen_samples:
+                raise ConfigError(f"Duplicate sample name: {name}")
+            seen_samples.add(name)
+            samples.append(SampleConfig(
+                name,
+                sample_dir / _format_sample_template(r1_template, name, "r1"),
+                sample_dir / _format_sample_template(r2_template, name, "r2"),
+            ))
+        if not samples:
+            raise ConfigError(f"samples.auto.raw_dir contains no sample directories: {raw_dir}")
+        return samples
+    raise ConfigError("'samples' must be a non-empty list or contain an 'auto' mapping")
+
+
 def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeConfig:
     path = Path(config_path).expanduser().resolve()
     if not path.is_file():
@@ -115,95 +331,125 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
     workdir = _resolve(path.parent, project.get("workdir", path.parent))
     output_dir = _resolve(workdir, project.get("output_dir", "02_output"))
 
-    samples_raw = raw.get("samples")
-    if not isinstance(samples_raw, list) or not samples_raw:
-        raise ConfigError("'samples' must be a non-empty list")
-    samples: List[SampleConfig] = []
-    seen_samples = set()
-    for item in samples_raw:
-        if not isinstance(item, dict) or not item.get("sample"):
-            raise ConfigError("Each sample requires sample, r1, and r2 fields")
-        name = str(item["sample"])
-        if name in seen_samples:
-            raise ConfigError(f"Duplicate sample name: {name}")
-        seen_samples.add(name)
-        samples.append(SampleConfig(name, _resolve(workdir, item.get("r1")), _resolve(workdir, item.get("r2"))))
+    samples = _parse_samples(raw.get("samples"), workdir)
 
-    segments_raw = raw.get("segments")
-    if not isinstance(segments_raw, list) or not segments_raw:
-        raise ConfigError("'segments' must be a non-empty list")
+    barcode_correction_default = _correction_from_mapping(raw.get("correction_barcode") or {})
+    linker_raw = raw.get("linker") or {}
+    default_linker_max_mismatch = int(linker_raw.get("max_mismatch", raw.get("linker_max_mismatch", 0)))
     segments: List[SegmentConfig] = []
     seen_segments = set()
-    for item in segments_raw:
-        if not isinstance(item, dict):
-            raise ConfigError("Each segment must be a mapping")
-        name = str(item.get("name", ""))
-        target = str(item.get("target", "")).lower()
-        read = str(item.get("read", "")).upper()
-        method_value = item.get("methods", item.get("method"))
-        if not name or name in seen_segments:
-            raise ConfigError(f"Segment names must be present and unique: {name!r}")
-        if target not in {"barcode1", "barcode2", "umi"}:
-            raise ConfigError(f"Segment {name}: target must be barcode1, barcode2, or umi")
-        if read not in {"R1", "R2"}:
-            raise ConfigError(f"Segment {name}: read must be R1 or R2")
-        try:
-            length = int(item["length"])
-        except (KeyError, TypeError, ValueError):
-            raise ConfigError(f"Segment {name}: length must be a positive integer") from None
-        if length <= 0:
-            raise ConfigError(f"Segment {name}: length must be positive")
-        start = item.get("start")
-        left = item.get("left_linker") or None
-        right = item.get("right_linker") or None
-        if isinstance(method_value, list):
-            requested_methods = {str(value).strip().lower() for value in method_value}
-        elif method_value is None:
-            requested_methods = set()
-        else:
-            normalized = str(method_value).lower().replace("linker_fixed", "linker+fixed")
-            for separator in (",", "|", "->"):
-                normalized = normalized.replace(separator, "+")
-            requested_methods = {value.strip() for value in normalized.split("+") if value.strip()}
-        unknown_methods = requested_methods - {"fixed", "linker"}
-        if unknown_methods:
-            raise ConfigError(f"Segment {name}: unsupported extraction method(s): {', '.join(sorted(unknown_methods))}")
-        # Presence of coordinates/linkers is itself an explicit method declaration.
-        # This allows either ``methods: [linker, fixed]`` or the compact form of
-        # specifying linker fields and ``start`` together.
-        use_fixed = "fixed" in requested_methods or start is not None
-        use_linker = "linker" in requested_methods or bool(left or right)
-        if not use_fixed and not use_linker:
-            raise ConfigError(f"Segment {name}: specify fixed coordinates, linker sequence(s), or both")
-        if use_fixed and (start is None or int(start) < 0):
-            raise ConfigError(f"Segment {name}: fixed extraction requires a 0-based start >= 0")
-        if use_linker and not left and not right:
-            raise ConfigError(f"Segment {name}: linker extraction requires left_linker and/or right_linker")
-        method = "linker_fixed" if use_linker and use_fixed else "linker" if use_linker else "fixed"
-        corr_raw = item.get("correction") or {}
-        corr = CorrectionConfig(
-            bool(corr_raw.get("enabled", True)), int(corr_raw.get("max_shift", 1)),
-            int(corr_raw.get("max_mismatch", 1)), bool(corr_raw.get("allow_shift", True)),
-            bool(corr_raw.get("allow_mismatch", True)),
-        )
-        whitelist = item.get("whitelist")
-        segments.append(SegmentConfig(
-            name=name, target=target, read=read, method=method, length=length,
-            start=int(start) if start is not None else None,
-            left_linker=str(left).upper() if left else None,
-            right_linker=str(right).upper() if right else None,
-            linker_max_mismatch=int(item.get("linker_max_mismatch", 0)),
-            whitelist=_resolve(workdir, whitelist) if whitelist else None, correction=corr,
-        ))
-        seen_segments.add(name)
+
+    barcode_groups_raw = raw.get("barcode")
+    direct_barcode_roles = [role for role in ("barcode1", "barcode2") if role in raw]
+    umi_section = raw.get("umi")
+    has_direct_sections = bool(direct_barcode_roles) or (
+        isinstance(umi_section, dict) and "segments" in umi_section
+    )
+    umi_segments_raw = umi_section if isinstance(umi_section, list) else None
+    if has_direct_sections:
+        for role in ("barcode1", "barcode2"):
+            if role not in raw:
+                continue
+            target_name, group_segments = _section_name_and_segments(role, raw[role])
+            for item in group_segments:
+                if not isinstance(item, dict):
+                    raise ConfigError(f"Each segment in {role} group {target_name} must be a mapping")
+                segments.append(_parse_segment(
+                    item, target=role, target_name=target_name, workdir=workdir,
+                    default_correction=barcode_correction_default,
+                    default_linker_max_mismatch=default_linker_max_mismatch,
+                    seen_segments=seen_segments,
+                ))
+        if "umi" not in raw:
+            raise ConfigError("'umi' must be provided when using direct barcode1/barcode2 sections")
+        umi_name, umi_group_segments = _section_name_and_segments("umi", raw["umi"])
+        for item in umi_group_segments:
+            if not isinstance(item, dict):
+                raise ConfigError("Each UMI segment must be a mapping")
+            segments.append(_parse_segment(
+                item, target="umi", target_name=umi_name, workdir=workdir,
+                default_correction=barcode_correction_default,
+                default_linker_max_mismatch=default_linker_max_mismatch,
+                seen_segments=seen_segments,
+            ))
+    elif barcode_groups_raw is not None or umi_segments_raw is not None:
+        if not isinstance(barcode_groups_raw, list) or not barcode_groups_raw:
+            raise ConfigError("'barcode' must be a non-empty list of barcode groups")
+        for group in barcode_groups_raw:
+            if not isinstance(group, dict):
+                raise ConfigError("Each barcode group must be a mapping")
+            role, target_name = _barcode_group_role_and_name(group)
+            group_segments = group.get("segments")
+            if not isinstance(group_segments, list) or not group_segments:
+                raise ConfigError(f"Barcode group {target_name} requires a non-empty 'segments' list")
+            for item in group_segments:
+                if not isinstance(item, dict):
+                    raise ConfigError(f"Each segment in barcode group {target_name} must be a mapping")
+                segments.append(_parse_segment(
+                    item, target=role, target_name=target_name, workdir=workdir,
+                    default_correction=barcode_correction_default,
+                    default_linker_max_mismatch=default_linker_max_mismatch,
+                    seen_segments=seen_segments,
+                ))
+        if not isinstance(umi_segments_raw, list) or not umi_segments_raw:
+            raise ConfigError("'umi' must be a non-empty list of UMI segments")
+        for item in umi_segments_raw:
+            if not isinstance(item, dict):
+                raise ConfigError("Each UMI segment must be a mapping")
+            segments.append(_parse_segment(
+                item, target="umi", target_name="umi", workdir=workdir,
+                default_correction=barcode_correction_default,
+                default_linker_max_mismatch=default_linker_max_mismatch,
+                seen_segments=seen_segments,
+            ))
+    else:
+        segments_raw = raw.get("segments")
+        if not isinstance(segments_raw, list) or not segments_raw:
+            raise ConfigError(
+                "Configuration requires either new 'barcode'/'umi' sections "
+                "or a legacy non-empty 'segments' list"
+            )
+        for item in segments_raw:
+            if not isinstance(item, dict):
+                raise ConfigError("Each segment must be a mapping")
+            target = str(item.get("target", "")).lower()
+            if target not in {"barcode1", "barcode2", "umi"}:
+                raise ConfigError(
+                    f"Segment {item.get('name', item.get('segment', ''))}: target must be "
+                    "barcode1, barcode2, or umi in legacy 'segments'. For custom names, "
+                    "use the new 'barcode' and 'umi' sections."
+                )
+            segments.append(_parse_segment(
+                item, target=target, target_name=target, workdir=workdir,
+                default_correction=barcode_correction_default,
+                default_linker_max_mismatch=default_linker_max_mismatch,
+                seen_segments=seen_segments,
+            ))
 
     targets = {s.target for s in segments}
     missing_targets = {"barcode1", "barcode2", "umi"} - targets
     if missing_targets:
         raise ConfigError(f"Missing segment target(s): {', '.join(sorted(missing_targets))}")
-    ann = raw.get("barcode2_annotation") or {}
+    group_annotation = None
+    if has_direct_sections:
+        group_annotation = (
+            raw.get("barcode2", {}).get("annotation", raw.get("barcode2", {}).get("barcode2_annotation"))
+            if isinstance(raw.get("barcode2"), dict) else None
+        )
+    elif isinstance(barcode_groups_raw, list):
+        for group in barcode_groups_raw:
+            if isinstance(group, dict):
+                try:
+                    role, _ = _barcode_group_role_and_name(group)
+                except ConfigError:
+                    continue
+                if role == "barcode2":
+                    group_annotation = group.get("annotation", group.get("barcode2_annotation"))
+                    if group_annotation:
+                        break
+    ann = group_annotation or raw.get("barcode2_annotation") or {}
     fb_info = _resolve(workdir, ann.get("fb_info"))
-    umi = raw.get("umi") or {}
+    umi = raw.get("correction_umi") or (raw.get("umi") if isinstance(raw.get("umi"), dict) else {}) or {}
     ds = raw.get("downsample") or {}
     perf = raw.get("performance") or {}
     resume = raw.get("resume") or {}
@@ -218,7 +464,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         raise ConfigError("downsample.ratios must be 'auto' or a list of numbers")
     if not ratios or any(x <= 0 or x > 1 for x in ratios):
         raise ConfigError("downsample.ratios must contain values in (0, 1]")
-    method = str(umi.get("correction_method", "directional"))
+    method = str(umi.get("method", umi.get("correction_method", "directional")))
     if method not in {"unique", "cluster", "adjacency", "directional"}:
         raise ConfigError("umi.correction_method must be unique, cluster, adjacency, or directional")
     threads = int(perf.get("threads", 1))
