@@ -70,6 +70,7 @@ class TagForgeConfig:
     quick_test_reads: int = 10000
     threads: int = 1
     barcode_workers: Optional[int] = None
+    umi_aggregation_workers: Optional[int] = None
     umi_workers: Optional[int] = None
     umi_batch_size: int = 5000
     umi_sqlite_cache_mb: int = 64
@@ -472,12 +473,19 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         raise ConfigError("performance.threads must be >= 1")
     barcode_workers_value = perf.get("barcode_workers")
     barcode_workers = int(barcode_workers_value) if barcode_workers_value is not None else None
+    umi_aggregation_workers_value = perf.get("umi_aggregation_workers")
+    umi_aggregation_workers = (
+        int(umi_aggregation_workers_value)
+        if umi_aggregation_workers_value is not None else None
+    )
     umi_workers_value = perf.get("umi_workers")
     umi_workers = int(umi_workers_value) if umi_workers_value is not None else None
     umi_batch_size = int(perf.get("umi_batch_size", 5000))
     umi_sqlite_cache_mb = int(perf.get("umi_sqlite_cache_mb", 64))
     if barcode_workers is not None and barcode_workers < 1:
         raise ConfigError("performance.barcode_workers must be >= 1")
+    if umi_aggregation_workers is not None and umi_aggregation_workers < 1:
+        raise ConfigError("performance.umi_aggregation_workers must be >= 1")
     if umi_workers is not None and umi_workers < 1:
         raise ConfigError("performance.umi_workers must be >= 1")
     if umi_batch_size < 1:
@@ -504,6 +512,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         downsample_seed=int(ds.get("random_seed", 12345)), downsample_repeats=int(ds.get("repeats", 1)),
         quick_test_enabled=bool(quick.get("enabled", True)), quick_test_reads=quick_test_reads,
         threads=threads, barcode_workers=barcode_workers,
+        umi_aggregation_workers=umi_aggregation_workers,
         umi_workers=umi_workers, umi_batch_size=umi_batch_size,
         umi_sqlite_cache_mb=umi_sqlite_cache_mb,
         chunk_size=chunk_size, extraction_preview_reads=preview_reads,

@@ -130,14 +130,20 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
         if step == "dedup" and isinstance(result, tuple) and isinstance(result[1], dict):
             summary = result[1]
             logger.info(
-                "dedup_summary\tvalid_reads=%s\tgroups=%s\traw_umis=%s\tmolecules=%s\t"
-                "duplicates=%s\trequested_workers=%s\tworkers=%s\tumi_batch_size=%s\tpeak_batch_umis=%s\t"
+                "dedup_summary\tvalid_reads=%s\tgroups=%s\ttotal_groups=%s\t"
+                "raw_umis=%s\ttotal_raw_umis=%s\tmolecules=%s\t"
+                "duplicates=%s\trequested_workers=%s\tworkers=%s\t"
+                "requested_aggregation_workers=%s\taggregation_workers=%s\t"
+                "umi_batch_size=%s\tbatches_submitted=%s\tbatches_completed=%s\t"
+                "peak_batch_umis=%s\t"
                 "sqlite_cache_mb=%s\taggregation_seconds=%.3f\tclustering_seconds=%.3f\t"
                 "wall_seconds=%.3f\telapsed_time=%.3f",
-                summary["valid_reads"], summary["groups"], summary["raw_umis"],
-                summary["molecules"], summary["duplicates"], summary["requested_workers"],
-                summary["workers"],
-                summary["umi_batch_size"], summary["peak_batch_umis"],
+                summary["valid_reads"], summary["groups"], summary["total_groups"],
+                summary["raw_umis"], summary["total_raw_umis"], summary["molecules"],
+                summary["duplicates"], summary["requested_workers"], summary["workers"],
+                summary["requested_aggregation_workers"], summary["aggregation_workers"],
+                summary["umi_batch_size"], summary["batches_submitted"],
+                summary["batches_completed"], summary["peak_batch_umis"],
                 summary["sqlite_cache_mb"], summary["aggregation_seconds"],
                 summary["clustering_seconds"], summary["wall_seconds"], time.monotonic() - start,
             )

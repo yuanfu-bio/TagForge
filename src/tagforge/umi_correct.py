@@ -4,12 +4,13 @@ import csv
 import sqlite3
 import time
 from collections import defaultdict, deque
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator
 
 from .config import TagForgeConfig
-from .io_utils import atomic_text, open_tsv, sample_dirs
+from .io_utils import atomic_text, open_tsv, sample_dirs, write_tsv
 from .logging_utils import sample_logger
 
 
@@ -101,6 +102,13 @@ def _dedup_batch(batch: list, method: str, max_distance: int):
     return rows, len(batch), input_reads, raw_umis
 
 
+def _aggregate_batch(rows: list[tuple[str, str, str]]):
+    counts = defaultdict(int)
+    for row in rows:
+        counts[row] += 1
+    return [(b1, b2, umi, count) for (b1, b2, umi), count in counts.items()], len(rows)
+
+
 def _worker_ready():
     """Small startup probe used before consuming the SQLite cursor."""
     return True
@@ -111,18 +119,91 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
     source = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"
     output = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
+    progress_path = dirs["logs"] / f"{sample_name}.dedup_progress.tsv"
     db_path = dirs["tmp"] / f"{sample_name}.umi_counts.sqlite3"
     db_path.unlink(missing_ok=True)
     started = time.monotonic()
     aggregation_started = started
     connection = sqlite3.connect(db_path)
+    aggregation_executor = None
     executor = None
+    requested_aggregation_workers = config.umi_aggregation_workers or min(config.threads, 4)
+    aggregation_workers = requested_aggregation_workers
     requested_workers = config.umi_workers or config.threads
     workers = requested_workers
     barcode1_col = config.target_name("barcode1")
     barcode2_name_col = f"{config.target_name('barcode2')}_name"
     umi_col = config.target_name("umi")
     fields = molecule_fields(config)
+    reads = 0
+    total_groups = 0
+    total_raw_umis = 0
+    molecules = 0
+    groups_processed = 0
+    raw_umis_processed = 0
+    batches_submitted = 0
+    batches_completed = 0
+    clustering_started = started
+    progress_fields = [
+        "status", "valid_reads", "groups", "total_groups", "group_percent",
+        "raw_umis", "total_raw_umis", "molecules", "batches_submitted",
+        "batches_completed", "pending_batches", "requested_workers", "workers",
+        "aggregation_workers", "sqlite_rows_written",
+        "elapsed_seconds", "valid_reads_per_second", "groups_per_second",
+        "eta_seconds", "estimated_finish",
+    ]
+
+    def record_progress(status: str, pending_batches: int = 0):
+        now = time.monotonic()
+        phase_start = aggregation_started if status == "aggregating" else clustering_started
+        elapsed = now - phase_start
+        valid_rate = reads / (now - started) if now > started else 0.0
+        rate = groups_processed / elapsed if elapsed else 0.0
+        fraction = (
+            groups_processed / total_groups
+            if total_groups else 0.0 if status in {"aggregating", "aggregated"} else 1.0
+        )
+        eta = (
+            elapsed * (1.0 - fraction) / fraction
+            if 0 < fraction < 1 else 0.0
+        )
+        finish = (
+            (datetime.now().astimezone() + timedelta(seconds=eta)).isoformat(timespec="seconds")
+            if eta else ""
+        )
+        row = {
+            "status": status, "valid_reads": reads, "groups": groups_processed,
+            "total_groups": total_groups, "group_percent": f"{fraction * 100:.2f}",
+            "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis,
+            "molecules": molecules, "batches_submitted": batches_submitted,
+            "batches_completed": batches_completed, "pending_batches": pending_batches,
+            "requested_workers": requested_workers, "workers": workers,
+            "aggregation_workers": aggregation_workers,
+            "sqlite_rows_written": total_raw_umis,
+            "elapsed_seconds": f"{elapsed:.2f}",
+            "valid_reads_per_second": f"{valid_rate:.2f}",
+            "groups_per_second": f"{rate:.3f}",
+            "eta_seconds": f"{eta:.2f}" if eta else "",
+            "estimated_finish": finish,
+        }
+        write_tsv(progress_path, progress_fields, [row])
+        logger.info(
+            "dedup_progress\tstatus=%s\tvalid_reads=%s\tgroups=%s\t"
+            "total_groups=%s\tgroup_percent=%s\traw_umis=%s\ttotal_raw_umis=%s\t"
+            "molecules=%s\tbatches_submitted=%s\tbatches_completed=%s\t"
+            "pending_batches=%s\trequested_workers=%s\tworkers=%s\t"
+            "aggregation_workers=%s\tsqlite_rows_written=%s\t"
+            "elapsed_seconds=%s\tvalid_reads_per_second=%s\tgroups_per_second=%s\t"
+            "eta_seconds=%s\testimated_finish=%s",
+            row["status"], row["valid_reads"], row["groups"], row["total_groups"],
+            row["group_percent"], row["raw_umis"], row["total_raw_umis"],
+            row["molecules"], row["batches_submitted"], row["batches_completed"],
+            row["pending_batches"], row["requested_workers"], row["workers"],
+            row["aggregation_workers"], row["sqlite_rows_written"],
+            row["elapsed_seconds"], row["valid_reads_per_second"],
+            row["groups_per_second"], row["eta_seconds"] or "NA",
+            row["estimated_finish"] or "NA",
+        )
     try:
         # This database is a disposable aggregation scratch file. Keeping its
         # cache bounded and temporary data on disk avoids competing with UMI
@@ -135,28 +216,82 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
             "CREATE TABLE counts (b1 TEXT, b2 TEXT, umi TEXT, n INTEGER, "
             "PRIMARY KEY (b1,b2,umi)) WITHOUT ROWID"
         )
-        batch = []
-        reads = 0
-        for row in open_tsv(source):
-            batch.append((row[barcode1_col], row[barcode2_name_col], row[umi_col], 1))
-            reads += 1
-            if len(batch) >= config.chunk_size:
+        if aggregation_workers > 1:
+            try:
+                aggregation_executor = ProcessPoolExecutor(max_workers=aggregation_workers)
+                aggregation_executor.submit(_worker_ready).result()
+            except (PermissionError, NotImplementedError, OSError) as exc:
+                if aggregation_executor is not None:
+                    aggregation_executor.shutdown(wait=True, cancel_futures=True)
+                aggregation_executor = None
+                aggregation_workers = 1
+                logger.warning(
+                    "dedup_aggregation_fallback\trequested_workers=%s\tworkers=1\treason=%s",
+                    requested_aggregation_workers, type(exc).__name__,
+                )
+        logger.info(
+            "dedup_aggregation_start\tbackend=%s\trequested_workers=%s\tworkers=%s\t"
+            "chunk_size=%s\tsqlite_cache_mb=%s",
+            "process-pool-preaggregate" if aggregation_workers > 1 else "serial",
+            requested_aggregation_workers, aggregation_workers, config.chunk_size,
+            config.umi_sqlite_cache_mb,
+        )
+
+        def write_aggregated(result):
+            nonlocal total_raw_umis
+            rows_to_write, _input_reads = result
+            total_raw_umis += len(rows_to_write)
+            if rows_to_write:
                 connection.executemany(
-                    "INSERT INTO counts VALUES (?,?,?,?) ON CONFLICT DO UPDATE SET n=n+1", batch
+                    "INSERT INTO counts VALUES (?,?,?,?) "
+                    "ON CONFLICT DO UPDATE SET n=n+excluded.n",
+                    rows_to_write,
                 )
                 connection.commit()
-                batch.clear()
+            record_progress("aggregating", 0)
+
+        batch = []
+        pending_aggregation = set()
+        for row in open_tsv(source):
+            batch.append((row[barcode1_col], row[barcode2_name_col], row[umi_col]))
+            reads += 1
+            if len(batch) >= config.chunk_size:
+                if aggregation_executor is None:
+                    write_aggregated(_aggregate_batch(batch))
+                else:
+                    while len(pending_aggregation) >= aggregation_workers:
+                        done, pending_aggregation = wait(
+                            pending_aggregation, return_when=FIRST_COMPLETED
+                        )
+                        for future in done:
+                            write_aggregated(future.result())
+                    pending_aggregation.add(
+                        aggregation_executor.submit(
+                            _aggregate_batch,
+                            batch,
+                        )
+                    )
+                batch = []
         if batch:
-            connection.executemany(
-                "INSERT INTO counts VALUES (?,?,?,?) ON CONFLICT DO UPDATE SET n=n+1", batch
+            if aggregation_executor is None:
+                write_aggregated(_aggregate_batch(batch))
+            else:
+                pending_aggregation.add(
+                    aggregation_executor.submit(
+                        _aggregate_batch,
+                        batch,
+                    )
+                )
+        while pending_aggregation:
+            done, pending_aggregation = wait(
+                pending_aggregation, return_when=FIRST_COMPLETED
             )
-            connection.commit()
+            for future in done:
+                write_aggregated(future.result())
         aggregation_seconds = time.monotonic() - aggregation_started
+        total_groups = connection.execute("SELECT COUNT(*) FROM (SELECT 1 FROM counts GROUP BY b1,b2)").fetchone()[0]
         cursor = connection.execute("SELECT b1,b2,umi,n FROM counts ORDER BY b1,b2")
         group_batches = _group_batches(cursor, config.umi_batch_size)
-        molecules = 0
-        groups_processed = 0
-        raw_umis_processed = 0
         peak_batch_umis = 0
         clustering_started = time.monotonic()
 
@@ -177,26 +312,30 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         logger.info(
             "dedup_parallel_start\tbackend=umi_tools-UMIClusterer\trequested_workers=%s\tworkers=%s\t"
             "batch_umis=%s\tmax_pending_batches=%s\tsqlite_cache_mb=%s\treads=%s\t"
-            "aggregation_seconds=%.3f",
+            "total_raw_umis=%s\taggregation_workers=%s\taggregation_seconds=%.3f",
             requested_workers, workers, config.umi_batch_size, workers, config.umi_sqlite_cache_mb,
-            reads, aggregation_seconds,
+            reads, total_raw_umis, aggregation_workers, aggregation_seconds,
         )
+        record_progress("aggregated", 0)
 
         with atomic_text(output, config.compression_level) as handle:
             writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
             writer.writerow(fields)
 
-            def consume(result):
-                nonlocal molecules, groups_processed, raw_umis_processed
+            def consume(result, pending_batches: int = 0):
+                nonlocal molecules, groups_processed, raw_umis_processed, batches_completed
                 rows, group_count, _batch_reads, raw_umi_count = result
                 writer.writerows(rows)
                 molecules += len(rows)
                 groups_processed += group_count
                 raw_umis_processed += raw_umi_count
+                batches_completed += 1
+                record_progress("running", pending_batches)
 
             if workers == 1:
                 for group_batch in group_batches:
                     peak_batch_umis = max(peak_batch_umis, sum(len(group) for _, group in group_batch))
+                    batches_submitted += 1
                     consume(_dedup_batch(group_batch, config.umi_method, config.umi_max_distance))
             else:
                 # At most one submitted batch per worker: enough to keep all
@@ -209,13 +348,20 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
                         pending.append(executor.submit(
                             _dedup_batch, group_batch, config.umi_method, config.umi_max_distance
                         ))
+                        batches_submitted += 1
                         if len(pending) >= workers:
-                            consume(pending.popleft().result())
+                            consume(pending.popleft().result(), len(pending))
                     while pending:
-                        consume(pending.popleft().result())
+                        consume(pending.popleft().result(), len(pending))
+        record_progress("completed", 0)
 
         clustering_seconds = time.monotonic() - clustering_started
+    except Exception:
+        record_progress("failed", 0)
+        raise
     finally:
+        if aggregation_executor is not None:
+            aggregation_executor.shutdown(wait=True, cancel_futures=True)
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
         connection.close()
@@ -227,9 +373,15 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         "molecules": molecules,
         "duplicates": reads - molecules,
         "groups": groups_processed,
+        "total_groups": total_groups,
         "raw_umis": raw_umis_processed,
+        "total_raw_umis": total_raw_umis,
         "requested_workers": requested_workers,
         "workers": workers,
+        "requested_aggregation_workers": requested_aggregation_workers,
+        "aggregation_workers": aggregation_workers,
+        "batches_submitted": batches_submitted,
+        "batches_completed": batches_completed,
         "umi_batch_size": config.umi_batch_size,
         "peak_batch_umis": peak_batch_umis,
         "sqlite_cache_mb": config.umi_sqlite_cache_mb,

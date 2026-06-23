@@ -53,11 +53,12 @@ class IntegrationTests(unittest.TestCase):
         log = (sample / "00_logs/example.pipeline.log").read_text(encoding="utf-8")
         self.assertIn("backend=cutadapt-python-api", log)
         self.assertIn("workers=2", log)
-        self.assertIn("tagforge\tversion=0.1.10", log)
+        self.assertIn("tagforge\tversion=0.1.12", log)
         self.assertIn("correction_progress", log)
         self.assertIn("correction_summary", log)
         self.assertIn("correction_parallel_start", log)
         self.assertIn("dedup_summary", log)
+        self.assertIn("dedup_progress", log)
         self.assertIn("workers=2", log)
         with gzip.open(sample / "02_extracted/example.extracted.tsv.gz", "rt", encoding="utf-8") as handle:
             extracted = handle.read()
@@ -76,6 +77,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len(preview.read_text(encoding="utf-8").splitlines()), 10)
         progress = sample / "00_logs/example.extraction_progress.tsv"
         self.assertIn("completed\t9\t100.00", progress.read_text(encoding="utf-8"))
+        dedup_progress = sample / "00_logs/example.dedup_progress.tsv"
+        self.assertTrue(dedup_progress.is_file())
+        self.assertIn("completed\t9", dedup_progress.read_text(encoding="utf-8"))
         stats = (sample / "02_extracted/example.extraction_stats.tsv").read_text(encoding="utf-8")
         self.assertIn("CELL\tCELL\tR1\tlinker_fixed\t9\t9\t8\t1", stats)
         with gzip.open(sample / "05_detail/example.valid_reads.tsv.gz", "rt", encoding="utf-8") as handle:

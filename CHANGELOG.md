@@ -3,6 +3,24 @@
 Every code-change release increments the patch component of the TagForge
 version. The version is kept in package metadata, the CLI, and pipeline logs.
 
+## 0.1.12 — 2026-06-23
+
+- Parallelize UMI valid-read pre-aggregation before SQLite writes using bounded
+  process workers, while keeping SQLite itself single-writer for correctness.
+- Add `performance.umi_aggregation_workers` to tune the pre-aggregation stage
+  separately from UMI-tools clustering workers.
+- Report aggregation worker counts and SQLite rows written in `dedup_progress`
+  and `dedup_summary` logs.
+
+## 0.1.11 — 2026-06-23
+
+- Add `dedup_progress` pipeline log records and
+  `00_logs/{sample}.dedup_progress.tsv` during UMI-tools deduplication,
+  including aggregation totals, worker count, completed groups/raw UMIs,
+  batch counts, molecule count, speed, ETA, and estimated finish time.
+- Expand `dedup_summary` with total groups/raw UMIs and submitted/completed
+  UMI batch counts for easier comparison with progress logs.
+
 ## 0.1.10 — 2026-06-23
 
 - Add the new grouped configuration layout: `barcode1`, `barcode2`, and `umi`

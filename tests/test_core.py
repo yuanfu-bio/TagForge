@@ -28,7 +28,7 @@ class CoreTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
         setup = (root / "setup.py").read_text(encoding="utf-8")
-        self.assertEqual(__version__, "0.1.10")
+        self.assertEqual(__version__, "0.1.12")
         self.assertIn(f'version = "{__version__}"', pyproject)
         self.assertIn(f'version="{__version__}"', setup)
 
@@ -174,6 +174,8 @@ linker:
 correction_umi:
   method: adjacency
   max_distance: 2
+performance:
+  umi_aggregation_workers: 3
 barcode1:
   name: PB
   segments:
@@ -229,6 +231,7 @@ umi:
             self.assertEqual(config.segments[2].correction.max_shift, 0)
             self.assertEqual(config.umi_method, "adjacency")
             self.assertEqual(config.umi_max_distance, 2)
+            self.assertEqual(config.umi_aggregation_workers, 3)
 
     def test_config_accepts_legacy_segments(self):
         with tempfile.TemporaryDirectory() as td:

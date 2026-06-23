@@ -419,13 +419,19 @@ memory and disk-write pressure. Disable `output.correction_trace` when the
 trace is not needed for QC.
 
 UMI-tools' `UMIClusterer` has no internal thread setting. TagForge therefore
-groups each Barcode1–feature scope independently and sends bounded batches to
-multiple worker processes. `performance.umi_batch_size` (default 5,000) limits
-the number of unique UMIs in a normal batch, and there is at most one pending
-batch per worker. A single unusually large Barcode1–feature group is never
-split because doing so would change correction results; it can therefore exceed
-the configured batch size. `performance.umi_sqlite_cache_mb` (default 64) caps
-the aggregation database cache and keeps temporary sorting on disk.
+first pre-aggregates valid reads into `(barcode, feature, raw UMI) -> count`
+records, writes those reduced records to a single-writer SQLite database, and
+then sends complete Barcode1–feature scopes to multiple UMI-tools worker
+processes. `performance.umi_aggregation_workers` controls the pre-aggregation
+worker pool before SQLite writes; when omitted it uses `min(threads, 4)`.
+`performance.umi_batch_size` (default 5,000) limits the number of unique UMIs
+in a normal UMI-tools batch, and there is at most one pending batch per worker.
+A single unusually large Barcode1–feature group is never split because doing so
+would change correction results; it can therefore exceed the configured batch
+size. `performance.umi_sqlite_cache_mb` (default 64) caps SQLite's in-memory
+page cache only. It is not the job memory request; it consumes part of the
+Slurm `--mem` allocation alongside Python processes, queued chunks, UMI-tools
+workers, gzip buffers, and operating-system cache.
 
 For a 28-CPU Slurm job, start with:
 
@@ -433,21 +439,32 @@ For a 28-CPU Slurm job, start with:
 performance:
   threads: 28
   barcode_workers: 16   # omit to use 28; lower if trace/output memory is limiting
+  umi_aggregation_workers: 4
   umi_workers: 12       # increase only while RAM and CPU efficiency remain healthy
   umi_batch_size: 5000  # lower to reduce queued UMI memory
-  umi_sqlite_cache_mb: 64
+  umi_sqlite_cache_mb: 512
   chunk_size: 50000
   compression_level: 1
 ```
 
 Every UMI worker has its own Python/UMI-tools baseline memory. As a practical
-starting point, reserve roughly 0.5–1 GB per UMI worker plus headroom for the
-largest single Barcode1–feature group, then measure the job's actual peak RSS.
-If memory is plentiful and CPU utilization remains below the allocation,
-increase `umi_workers`; if the job approaches its memory limit, lower
-`umi_workers` first and then `umi_batch_size`. The log entries
-`dedup_parallel_start` and `dedup_summary` report effective workers, batch
-limits, peak batch size, and separate SQLite aggregation/UMI clustering times.
+starting point, reserve roughly 0.5–1 GB per UMI worker, memory for
+`umi_aggregation_workers` queued chunks, the configured SQLite cache, and
+headroom for the largest single Barcode1–feature group, then measure the job's
+actual peak RSS. With `--mem 64G`, keep `umi_sqlite_cache_mb` around
+512–2048 MB and avoid very large `chunk_size` together with many aggregation
+workers. With `--mem 128G` or higher, `umi_sqlite_cache_mb: 4096` is reasonable
+for very large libraries if scratch I/O is fast. If memory is plentiful and CPU
+utilization remains below the allocation, increase `umi_workers` or
+`umi_aggregation_workers`; if the job approaches its memory limit, lower
+`umi_workers` first, then `umi_aggregation_workers`/`chunk_size`, and finally
+`umi_batch_size`. The log entries
+`dedup_parallel_start`, `dedup_progress`, and `dedup_summary` report effective
+workers, aggregation totals, SQLite rows written, completed groups/raw UMIs,
+batch counts, speed, ETA, peak batch size, and separate SQLite aggregation/UMI
+clustering times.
+The latest deduplication progress snapshot is also written to
+`00_logs/{sample}.dedup_progress.tsv`.
 
 Read-level files are never loaded wholesale. UMI aggregation is disk-backed,
 and only bounded complete correction groups are in flight. Report creation only
