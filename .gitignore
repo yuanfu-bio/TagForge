@@ -40,6 +40,5 @@ Thumbs.db
 # big files
 02_output/
 00_report/
-docs
-examples
-reference
+docs/
+reference/
