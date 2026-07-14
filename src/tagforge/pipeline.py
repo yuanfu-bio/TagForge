@@ -30,7 +30,13 @@ def expected_outputs(config: TagForgeConfig, sample: str, step: str):
         "correct": [d["detail"] / f"{sample}.valid_reads.tsv.gz", d["corrected"] / f"{sample}.barcode_correction_stats.tsv"] + ([d["corrected"] / f"{sample}.barcode_correction_trace.tsv.gz"] if config.trace_enabled else []),
         "dedup": [d["detail"] / f"{sample}.molecule_detail.tsv.gz"],
         "matrix": [d["matrix"] / f"{sample}.raw_count_matrix.tsv.gz"],
-        "downsample": [d["downsample"] / f"{sample}.downsample_metrics.tsv", d["downsample"] / f"{sample}.optimal_saturation_point.tsv", d["detail"] / f"{sample}.optimal_saturation_molecule_detail.tsv.gz", d["matrix"] / f"{sample}.optimal_saturation_count_matrix.tsv.gz"],
+        "downsample": [
+            d["downsample"] / f"{sample}.downsample_metrics.tsv",
+            d["downsample"] / f"{sample}.optimal_saturation_point.tsv",
+            d["downsample"] / f"{sample}.downsample.html",
+            d["detail"] / f"{sample}.optimal_saturation_molecule_detail.tsv.gz",
+            d["matrix"] / f"{sample}.optimal_saturation_count_matrix.tsv.gz",
+        ],
         "report": [d["report"] / f"{sample}.report.xlsx", d["report"] / f"{sample}.report.html"],
     }[step]
 

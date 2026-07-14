@@ -55,6 +55,9 @@ def report_sample(config: TagForgeConfig, sample_name: str):
     write_xlsx(xlsx, sheets)
     ratios = [float(r["downsample_ratio"]) for r in metric_records]
     saturation = [float(r["sequencing_saturation"]) for r in metric_records]
+    duplication = [float(r["duplication_ratio"]) for r in metric_records]
+    umi_types = [int(r["umi_types"]) for r in metric_records]
+    singletons = [int(r["umi_detected_once"]) for r in metric_records]
     valid_rate = float(combined.get("valid_rate", 0) or 0)
     flags = []
     if valid_rate < 0.5: flags.append("Combined barcode/UMI valid rate is below 50%.")
@@ -78,7 +81,12 @@ body{{margin:0;background:#07111f;color:#e5edf8;font:15px system-ui}}main{{max-w
 <section class="panel"><h2>Sequencing saturation</h2><div id="sat" style="height:390px"></div></section>
 <section class="panel"><h2>Top features</h2><table><tr><th>Feature</th><th>Molecules</th></tr>{''.join(f'<tr><td>{html.escape(k)}</td><td>{v:,}</td></tr>' for k,v in features.most_common(25))}</table></section>
 <section class="panel"><h2>QC flags</h2>{''.join(f'<p class="flag">⚠ {html.escape(f)}</p>' for f in flags) or '<p>No automatic QC warnings.</p>'}</section>
-<script>Plotly.newPlot('sat',[{{x:{json.dumps(ratios)},y:{json.dumps(saturation)},mode:'lines+markers',line:{{color:'#5eead4',width:3}}}}],{{paper_bgcolor:'#0f1d30',plot_bgcolor:'#0f1d30',font:{{color:'#cbd5e1'}},xaxis:{{title:'Downsample ratio',gridcolor:'#24344d'}},yaxis:{{title:'Saturation (%)',gridcolor:'#24344d'}}}},{{responsive:true}})</script></main></body></html>'''
+<script>Plotly.newPlot('sat',[
+{{x:{json.dumps(ratios)},y:{json.dumps(saturation)},name:'Sequencing Saturation',mode:'lines+markers',yaxis:'y3',line:{{color:'#5eead4',width:3}}}},
+{{x:{json.dumps(ratios)},y:{json.dumps(duplication)},name:'Duplication Ratio',mode:'lines+markers',yaxis:'y3',line:{{color:'#f97316',width:3}}}},
+{{x:{json.dumps(ratios)},y:{json.dumps(umi_types)},name:'UMI Types',mode:'lines+markers',yaxis:'y2',line:{{color:'#22c55e',width:3}}}},
+{{x:{json.dumps(ratios)},y:{json.dumps(singletons)},name:'UMI detected once',mode:'lines+markers',yaxis:'y',line:{{color:'#a78bfa',width:3}}}}
+],{{paper_bgcolor:'#0f1d30',plot_bgcolor:'#0f1d30',font:{{color:'#cbd5e1'}},legend:{{orientation:'h',x:0.5,xanchor:'center',y:-0.15}},xaxis:{{title:'Downsample ratio',gridcolor:'#24344d'}},yaxis:{{title:'UMI detected once',domain:[0.05,0.48],gridcolor:'#24344d'}},yaxis2:{{title:'UMI Types',overlaying:'y',side:'right',domain:[0.05,0.48],gridcolor:'#24344d'}},yaxis3:{{title:'Saturation / Duplication (%)',domain:[0.56,1],range:[0,100],gridcolor:'#24344d'}}}},{{responsive:true}})</script></main></body></html>'''
     with atomic_text(report_html) as handle: handle.write(page)
     return [xlsx, report_html]
 

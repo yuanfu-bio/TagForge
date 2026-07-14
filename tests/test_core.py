@@ -10,7 +10,7 @@ from unittest.mock import patch
 from tagforge import __version__
 from tagforge.barcode_correct import WhitelistCorrector
 from tagforge.config import ConfigError, CorrectionConfig, SegmentConfig, default_downsample_ratios, load_config
-from tagforge.downsample import calculate_metrics
+from tagforge.downsample import _analysis_ratios, calculate_metrics
 from tagforge.extract import decode_method_payload, decode_segment_payload, extract_segment
 from tagforge.fastq import _physical_position, open_text, paired_fastq, paired_fastq_batches
 from tagforge.slurm import make_slurm
@@ -28,7 +28,7 @@ class CoreTests(unittest.TestCase):
         root = Path(__file__).parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
         setup = (root / "setup.py").read_text(encoding="utf-8")
-        self.assertEqual(__version__, "0.1.12")
+        self.assertEqual(__version__, "0.1.13")
         self.assertIn(f'version = "{__version__}"', pyproject)
         self.assertIn(f'version="{__version__}"', setup)
 
@@ -148,6 +148,10 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(ratios), 36)
         self.assertEqual(ratios[:3], [0.0001, 0.0002, 0.0003])
         self.assertEqual(ratios[-3:], [0.7, 0.8, 0.9])
+        config = SimpleNamespace(downsample_ratios=ratios)
+        self.assertEqual(len(_analysis_ratios(config)), 38)
+        self.assertEqual(_analysis_ratios(config)[0], 0.0)
+        self.assertEqual(_analysis_ratios(config)[-1], 1.0)
 
     def test_config_accepts_grouped_barcode_and_umi_sections(self):
         with tempfile.TemporaryDirectory() as td:

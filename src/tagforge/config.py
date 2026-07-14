@@ -463,8 +463,8 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         ratios = [float(x) for x in ratios_value]
     else:
         raise ConfigError("downsample.ratios must be 'auto' or a list of numbers")
-    if not ratios or any(x <= 0 or x > 1 for x in ratios):
-        raise ConfigError("downsample.ratios must contain values in (0, 1]")
+    if not ratios or any(x < 0 or x > 1 for x in ratios):
+        raise ConfigError("downsample.ratios must contain values in [0, 1]")
     method = str(umi.get("method", umi.get("correction_method", "directional")))
     if method not in {"unique", "cluster", "adjacency", "directional"}:
         raise ConfigError("umi.correction_method must be unique, cluster, adjacency, or directional")
@@ -501,6 +501,9 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
     quick_test_reads = int(quick.get("reads", 10000))
     if quick_test_reads < 1:
         raise ConfigError("quick_test.reads must be >= 1")
+    downsample_repeats = int(ds.get("repeats", 1))
+    if downsample_repeats < 1:
+        raise ConfigError("downsample.repeats must be >= 1")
     config = TagForgeConfig(
         path=path, workdir=workdir, output_dir=output_dir, samples=samples, segments=segments,
         fb_info=fb_info, fb_id_column=str(ann.get("id_column", "FB_ID")),
@@ -509,7 +512,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         allow_duplicate_names=bool(ann.get("allow_duplicate_names", False)),
         umi_method=method, umi_max_distance=int(umi.get("max_distance", 1)),
         downsample_enabled=bool(ds.get("enabled", True)), downsample_ratios=sorted(set(ratios)),
-        downsample_seed=int(ds.get("random_seed", 12345)), downsample_repeats=int(ds.get("repeats", 1)),
+        downsample_seed=int(ds.get("random_seed", 12345)), downsample_repeats=downsample_repeats,
         quick_test_enabled=bool(quick.get("enabled", True)), quick_test_reads=quick_test_reads,
         threads=threads, barcode_workers=barcode_workers,
         umi_aggregation_workers=umi_aggregation_workers,

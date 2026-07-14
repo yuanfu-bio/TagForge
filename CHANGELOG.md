@@ -3,6 +3,21 @@
 Every code-change release increments the patch component of the TagForge
 version. The version is kept in package metadata, the CLI, and pipeline logs.
 
+## 0.1.13 — 2026-06-24
+
+- Optimize downsampling by loading molecule details once per sample and reusing
+  in-memory molecule support counts for all ratio/repeat calculations.
+- Use Python's native `random.binomialvariate` when available for faster
+  per-molecule read sampling, with a deterministic fallback for older Python
+  versions.
+- Add reference-style downsample endpoints at ratios `0` and `1` to the
+  saturation output, while retaining the existing logarithmic 36-ratio grid.
+- Add `00_logs/{sample}.downsample_progress.tsv`, `downsample_progress` log
+  records, and `06_downsample/{sample}.downsample.html` with Saturation,
+  Duplication, UMI Types, and singleton UMI curves.
+- Expand the sample HTML report saturation plot to show the same four
+  downsample metrics.
+
 ## 0.1.12 — 2026-06-23
 
 - Parallelize UMI valid-read pre-aggregation before SQLite writes using bounded
