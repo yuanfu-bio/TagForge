@@ -15,7 +15,7 @@ from tagforge.extract import decode_method_payload, decode_segment_payload, extr
 from tagforge.fastq import _physical_position, open_text, paired_fastq, paired_fastq_batches
 from tagforge.slurm import make_slurm
 from tagforge.quick_test import _take_leading_records
-from tagforge.umi_correct import _dedup_batch, _group_batches, deduplicate_umis
+from tagforge.umi_correct import _aggregated_tsv_cursor, _dedup_batch, _external_sort_aggregate, _group_batches, deduplicate_umis
 
 
 class CoreTests(unittest.TestCase):
@@ -121,6 +121,33 @@ class CoreTests(unittest.TestCase):
             result = deduplicate_umis({"AAAA": 10, "AAAT": 2, "CCCC": 3}, "directional", 1)
         self.assertEqual(result["AAAT"], "AAAA")
         self.assertEqual(result["CCCC"], "CCCC")
+
+    def test_external_sort_aggregation_counts_cross_chunk_duplicates(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = root / "valid.tsv"
+            source.write_text(
+                "PB\tFB_name\tUMI\n"
+                "PB2\tCD3\tTTTT\n"
+                "PB1\tCD3\tAAAA\n"
+                "PB1\tCD3\tAAAA\n"
+                "PB1\tCD3\tAAAT\n"
+                "PB2\tCD3\tTTTT\n",
+                encoding="utf-8",
+            )
+            scratch = root / "scratch"; scratch.mkdir()
+            events = []
+            aggregated, reads, raw_umis, groups, version = _external_sort_aggregate(
+                source, scratch, "PB", "FB_name", "UMI", 1, 1, lambda *event: events.append(event),
+            )
+            self.assertIn("GNU", version)
+            self.assertEqual(events[-1], ("aggregate_complete", 5, 3, 2))
+            self.assertIn(("sort_complete", 5, 0, 0), events)
+            self.assertEqual((reads, raw_umis, groups), (5, 3, 2))
+            self.assertEqual(list(_aggregated_tsv_cursor(aggregated)), [
+                ("PB1", "CD3", "AAAA", 2), ("PB1", "CD3", "AAAT", 1),
+                ("PB2", "CD3", "TTTT", 2),
+            ])
 
     def test_umi_group_batches_are_bounded_without_splitting_groups(self):
         cursor = [
@@ -236,6 +263,8 @@ umi:
             self.assertEqual(config.umi_method, "adjacency")
             self.assertEqual(config.umi_max_distance, 2)
             self.assertEqual(config.umi_aggregation_workers, 3)
+            self.assertEqual(config.umi_aggregation_backend, "external_sort")
+            self.assertEqual(config.umi_sort_memory_mb, 512)
 
     def test_config_accepts_legacy_segments(self):
         with tempfile.TemporaryDirectory() as td:

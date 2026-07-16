@@ -6,6 +6,7 @@ dependencies:
   - python=3.11
   - cutadapt>=4.6
   - umi_tools>=1.1.5
+  - coreutils
   - pyyaml>=6
   - pip
   - setuptools>=68

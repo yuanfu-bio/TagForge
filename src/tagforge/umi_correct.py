@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import csv
+import shutil
 import sqlite3
+import subprocess
+import tempfile
 import time
 from collections import defaultdict, deque
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -9,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator
 
-from .config import TagForgeConfig
+from .config import ConfigError, TagForgeConfig
 from .io_utils import atomic_text, open_tsv, sample_dirs, write_tsv
 from .logging_utils import sample_logger
 
@@ -114,7 +117,189 @@ def _worker_ready():
     return True
 
 
+def _external_sort_aggregate(
+    source: Path, temp_dir: Path, barcode1_col: str, barcode2_name_col: str, umi_col: str,
+    workers: int, memory_mb: int, progress,
+):
+    """Sort raw UMI tuples externally, then stream exact counts to a TSV file."""
+    sort = shutil.which("sort")
+    if sort is None:
+        raise ConfigError(
+            "UMI external_sort aggregation requires GNU sort in PATH. "
+            "Install coreutils in the TagForge environment or set "
+            "performance.umi_aggregation_backend: sqlite."
+        )
+    try:
+        version = subprocess.run(
+            [sort, "--version"], check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ).stdout.splitlines()[0]
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ConfigError(f"Could not run required external tool 'sort': {exc}") from exc
+    if "GNU" not in version:
+        raise ConfigError("UMI external_sort aggregation requires GNU sort (coreutils)")
+
+    sorted_path = temp_dir / "raw_umi_tuples.sorted.tsv"
+    aggregated_path = temp_dir / "raw_umi_counts.tsv"
+    command = [
+        sort, "--parallel", str(workers), "--buffer-size", f"{memory_mb}M", "--temporary-directory", str(temp_dir),
+        "--field-separator", "\t", "--key", "1,1", "--key", "2,2", "--key", "3,3",
+    ]
+    reads = 0
+    process = None
+    try:
+        with sorted_path.open("w", encoding="utf-8", newline="") as sorted_handle:
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=sorted_handle, stderr=subprocess.PIPE, text=True)
+            assert process.stdin is not None
+            try:
+                for row in open_tsv(source):
+                    values = (row[barcode1_col], row[barcode2_name_col], row[umi_col])
+                    if any("\t" in value or "\n" in value or "\r" in value for value in values):
+                        raise ConfigError("PB, FB name, and UMI values must not contain tabs or newlines for external_sort aggregation")
+                    process.stdin.write("\t".join(values) + "\n")
+                    reads += 1
+                    if reads % 1_000_000 == 0:
+                        progress("sort_input", reads, 0, 0)
+            finally:
+                process.stdin.close()
+            while True:
+                try:
+                    process.wait(timeout=30)
+                    break
+                except subprocess.TimeoutExpired:
+                    progress("sort_running", reads, 0, 0)
+            stderr = process.stderr.read() if process.stderr is not None else ""
+            if process.stderr is not None:
+                process.stderr.close()
+            if process.returncode != 0:
+                raise RuntimeError(f"GNU sort failed during UMI aggregation: {stderr.strip() or 'unknown error'}")
+        progress("sort_complete", reads, 0, 0)
+
+        raw_umis = groups = 0
+        previous = None
+        count = 0
+        with sorted_path.open("r", encoding="utf-8", newline="") as source_handle, \
+             aggregated_path.open("w", encoding="utf-8", newline="") as output_handle:
+            for line in source_handle:
+                key = tuple(line.rstrip("\n").split("\t"))
+                if len(key) != 3:
+                    raise RuntimeError("GNU sort produced an invalid UMI tuple record")
+                if previous is not None and key != previous:
+                    output_handle.write("\t".join((*previous, str(count))) + "\n")
+                    raw_umis += 1
+                    if previous[:2] != key[:2]:
+                        groups += 1
+                    if raw_umis % 1_000_000 == 0:
+                        progress("count_output", reads, raw_umis, groups)
+                    previous, count = key, 1
+                elif previous is None:
+                    previous, count = key, 1
+                else:
+                    count += 1
+            if previous is not None:
+                output_handle.write("\t".join((*previous, str(count))) + "\n")
+                raw_umis += 1
+                groups += 1
+        sorted_path.unlink(missing_ok=True)
+        progress("aggregate_complete", reads, raw_umis, groups)
+        return aggregated_path, reads, raw_umis, groups, version
+    except Exception:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            process.wait()
+        if process is not None and process.stderr is not None and not process.stderr.closed:
+            process.stderr.close()
+        sorted_path.unlink(missing_ok=True)
+        aggregated_path.unlink(missing_ok=True)
+        raise
+
+
+def _aggregated_tsv_cursor(path: Path) -> Iterator[tuple[str, str, str, int]]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        for line in handle:
+            b1, b2, umi, count = line.rstrip("\n").split("\t")
+            yield b1, b2, umi, int(count)
+
+
+
+def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
+    """Deduplicate after GNU sort has made each PB-FB UMI scope contiguous."""
+    dirs = sample_dirs(config.output_dir, sample_name)
+    logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
+    source = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"
+    output = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
+    progress_path = dirs["logs"] / f"{sample_name}.dedup_progress.tsv"
+    started = time.monotonic()
+    aggregation_workers = config.umi_aggregation_workers or min(config.threads, 4)
+    requested_workers = config.umi_workers or config.threads
+    workers = requested_workers
+    b1_col, b2_col, umi_col = config.target_name("barcode1"), f"{config.target_name('barcode2')}_name", config.target_name("umi")
+    reads = total_raw_umis = total_groups = molecules = groups_processed = raw_umis_processed = 0
+    batches_submitted = batches_completed = peak_batch_umis = 0
+    executor = None
+    sort_dir = Path(tempfile.mkdtemp(prefix=f"{sample_name}.umi-sort.", dir=dirs["tmp"]))
+    fields = molecule_fields(config)
+    progress_fields = ["status", "valid_reads", "groups", "total_groups", "raw_umis", "total_raw_umis", "molecules", "batches_submitted", "batches_completed", "requested_workers", "workers", "aggregation_workers", "aggregation_records", "elapsed_seconds"]
+
+    def progress(status: str):
+        elapsed = time.monotonic() - started
+        row = {"status": status, "valid_reads": reads, "groups": groups_processed, "total_groups": total_groups, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "molecules": molecules, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "requested_workers": requested_workers, "workers": workers, "aggregation_workers": aggregation_workers, "aggregation_records": total_raw_umis, "elapsed_seconds": f"{elapsed:.2f}"}
+        write_tsv(progress_path, progress_fields, [row])
+        logger.info("dedup_progress\tstatus=%s\tvalid_reads=%s\tgroups=%s\ttotal_groups=%s\traw_umis=%s\ttotal_raw_umis=%s\tmolecules=%s\tbatches_completed=%s\taggregation_records=%s\telapsed_seconds=%s", status, reads, groups_processed, total_groups, raw_umis_processed, total_raw_umis, molecules, batches_completed, total_raw_umis, row["elapsed_seconds"])
+
+    def aggregation_progress(status: str, input_reads: int, raw_umis: int, groups: int):
+        nonlocal reads, total_raw_umis, total_groups
+        reads, total_raw_umis, total_groups = input_reads, raw_umis, groups
+        progress(status)
+
+    try:
+        logger.info("dedup_aggregation_start\tbackend=gnu-sort\trequested_workers=%s\tworkers=%s\tsort_memory_mb=%s\ttmp_dir=%s", aggregation_workers, aggregation_workers, config.umi_sort_memory_mb, sort_dir)
+        aggregated_path, reads, total_raw_umis, total_groups, sort_version = _external_sort_aggregate(source, sort_dir, b1_col, b2_col, umi_col, aggregation_workers, config.umi_sort_memory_mb, aggregation_progress)
+        aggregation_seconds = time.monotonic() - started
+        logger.info("dedup_aggregation_complete\tbackend=gnu-sort\tsort_version=%s\treads=%s\tunique_raw_umis=%s\tgroups=%s\tseconds=%.3f", sort_version, reads, total_raw_umis, total_groups, aggregation_seconds)
+        progress("aggregated")
+        if workers > 1:
+            try:
+                executor = ProcessPoolExecutor(max_workers=workers)
+                executor.submit(_worker_ready).result()
+            except (PermissionError, NotImplementedError, OSError) as exc:
+                if executor is not None:
+                    executor.shutdown(wait=True, cancel_futures=True)
+                executor = None
+                workers = 1
+                logger.warning("dedup_parallel_fallback\trequested_workers=%s\tworkers=1\treason=%s", requested_workers, type(exc).__name__)
+        logger.info("dedup_parallel_start\tbackend=umi_tools-UMIClusterer\trequested_workers=%s\tworkers=%s\tbatch_umis=%s\treads=%s\ttotal_raw_umis=%s\taggregation_workers=%s\taggregation_seconds=%.3f", requested_workers, workers, config.umi_batch_size, reads, total_raw_umis, aggregation_workers, aggregation_seconds)
+        clustering_started = time.monotonic()
+        group_batches = _group_batches(_aggregated_tsv_cursor(aggregated_path), config.umi_batch_size)
+        with atomic_text(output, config.compression_level) as handle:
+            writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+            writer.writerow(fields)
+            def consume(result):
+                nonlocal molecules, groups_processed, raw_umis_processed, batches_completed
+                rows, group_count, _batch_reads, raw_umi_count = result
+                writer.writerows(rows); molecules += len(rows); groups_processed += group_count; raw_umis_processed += raw_umi_count; batches_completed += 1; progress("running")
+            if workers == 1:
+                for group_batch in group_batches:
+                    peak_batch_umis = max(peak_batch_umis, sum(len(group) for _, group in group_batch)); batches_submitted += 1
+                    consume(_dedup_batch(group_batch, config.umi_method, config.umi_max_distance))
+            else:
+                pending = deque()
+                with executor:
+                    for group_batch in group_batches:
+                        peak_batch_umis = max(peak_batch_umis, sum(len(group) for _, group in group_batch)); batches_submitted += 1
+                        pending.append(executor.submit(_dedup_batch, group_batch, config.umi_method, config.umi_max_distance))
+                        if len(pending) >= workers: consume(pending.popleft().result())
+                    while pending: consume(pending.popleft().result())
+        clustering_seconds = time.monotonic() - clustering_started
+        progress("completed")
+        return output, {"valid_reads": reads, "molecules": molecules, "duplicates": reads - molecules, "groups": groups_processed, "total_groups": total_groups, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "requested_workers": requested_workers, "workers": workers, "requested_aggregation_workers": aggregation_workers, "aggregation_workers": aggregation_workers, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "umi_batch_size": config.umi_batch_size, "peak_batch_umis": peak_batch_umis, "aggregation_backend": "external_sort", "sort_memory_mb": config.umi_sort_memory_mb, "aggregation_seconds": aggregation_seconds, "clustering_seconds": clustering_seconds, "wall_seconds": time.monotonic() - started}
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        shutil.rmtree(sort_dir, ignore_errors=True)
+
 def dedup_sample(config: TagForgeConfig, sample_name: str):
+    if config.umi_aggregation_backend == "external_sort":
+        return _dedup_sample_external_sort(config, sample_name)
     dirs = sample_dirs(config.output_dir, sample_name)
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
     source = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"

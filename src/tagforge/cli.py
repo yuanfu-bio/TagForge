@@ -88,9 +88,10 @@ performance:
   # Barcode whitelist correction is parallelized by extracted-read chunks.
   # Omit barcode_workers to use threads.
   # barcode_workers: 2
-  # UMI pre-aggregation is parallelized before single-writer SQLite updates.
-  # Omit umi_aggregation_workers to use min(threads, 4).
+  # UMI aggregation uses GNU sort by default; workers control sort parallelism.
+  # umi_aggregation_backend: external_sort  # or sqlite for legacy compatibility
   # umi_aggregation_workers: 2
+  # umi_sort_memory_mb: 512
   # UMI-tools groups are parallelized with processes. Omit umi_workers to use threads.
   # umi_workers: 2
   umi_batch_size: 5000

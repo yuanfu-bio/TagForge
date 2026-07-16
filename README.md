@@ -8,7 +8,7 @@ logs, Excel workbooks, and interactive HTML reports.
 
 The implementation is streaming on Python 3.9+. FASTQ and large TSV files are
 processed incrementally; high-cardinality UMI and matrix aggregation uses
-temporary SQLite databases. Cutadapt and UMI-tools are mandatory runtime
+temporary files. Cutadapt and UMI-tools are mandatory runtime
 dependencies: linker matching uses Cutadapt's Python API and UMI grouping uses
 UMI-tools' `UMIClusterer` directly.
 
@@ -430,13 +430,16 @@ memory and disk-write pressure. Disable `output.correction_trace` when the
 trace is not needed for QC.
 
 UMI-tools' `UMIClusterer` has no internal thread setting. TagForge therefore
-first pre-aggregates valid reads into `(barcode, feature, raw UMI) -> count`
-records, writes those reduced records to a single-writer SQLite database, and
-then sends complete Barcode1–feature scopes to multiple UMI-tools worker
-processes. `performance.umi_aggregation_workers` controls the pre-aggregation
-worker pool before SQLite writes; when omitted it uses `min(threads, 4)`.
-`performance.umi_batch_size` (default 5,000) limits the number of unique UMIs
-in a normal UMI-tools batch, and there is at most one pending batch per worker.
+first exactly aggregates valid reads into `(barcode, feature, raw UMI) -> count`
+records, then sends complete Barcode1–feature scopes to multiple UMI-tools worker
+processes. The default `performance.umi_aggregation_backend: external_sort`
+uses GNU `sort` for parallel external ordering and streams the exact counts;
+this avoids the random single-writer SQLite UPSERT bottleneck for very large PB-FB
+libraries. `umi_aggregation_workers` controls GNU sort parallelism and
+`umi_sort_memory_mb` its memory buffer. Set `umi_aggregation_backend: sqlite`
+to retain the legacy SQLite implementation. `performance.umi_batch_size`
+(default 5,000) limits the number of unique UMIs in a normal UMI-tools batch,
+and there is at most one pending batch per worker.
 A single unusually large Barcode1–feature group is never split because doing so
 would change correction results; it can therefore exceed the configured batch
 size. `performance.umi_sqlite_cache_mb` (default 64) caps SQLite's in-memory
@@ -450,7 +453,9 @@ For a 28-CPU Slurm job, start with:
 performance:
   threads: 28
   barcode_workers: 16   # omit to use 28; lower if trace/output memory is limiting
-  umi_aggregation_workers: 4
+  umi_aggregation_backend: external_sort
+  umi_aggregation_workers: 8
+  umi_sort_memory_mb: 4096
   umi_workers: 12       # increase only while RAM and CPU efficiency remain healthy
   umi_batch_size: 5000  # lower to reduce queued UMI memory
   umi_sqlite_cache_mb: 512
@@ -458,7 +463,7 @@ performance:
   compression_level: 1
 ```
 
-Every UMI worker has its own Python/UMI-tools baseline memory. As a practical
+External sorting needs substantial temporary disk space; keep `08_tmp` on local SSD/NVMe and reserve several times the uncompressed tuple stream size. Every UMI worker has its own Python/UMI-tools baseline memory. As a practical
 starting point, reserve roughly 0.5–1 GB per UMI worker, memory for
 `umi_aggregation_workers` queued chunks, the configured SQLite cache, and
 headroom for the largest single Barcode1–feature group, then measure the job's

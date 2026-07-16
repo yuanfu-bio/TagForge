@@ -142,7 +142,8 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
                 "requested_aggregation_workers=%s\taggregation_workers=%s\t"
                 "umi_batch_size=%s\tbatches_submitted=%s\tbatches_completed=%s\t"
                 "peak_batch_umis=%s\t"
-                "sqlite_cache_mb=%s\taggregation_seconds=%.3f\tclustering_seconds=%.3f\t"
+                "aggregation_backend=%s\tsort_memory_mb=%s\tsqlite_cache_mb=%s\t"
+                "aggregation_seconds=%.3f\tclustering_seconds=%.3f\t"
                 "wall_seconds=%.3f\telapsed_time=%.3f",
                 summary["valid_reads"], summary["groups"], summary["total_groups"],
                 summary["raw_umis"], summary["total_raw_umis"], summary["molecules"],
@@ -150,7 +151,9 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
                 summary["requested_aggregation_workers"], summary["aggregation_workers"],
                 summary["umi_batch_size"], summary["batches_submitted"],
                 summary["batches_completed"], summary["peak_batch_umis"],
-                summary["sqlite_cache_mb"], summary["aggregation_seconds"],
+                summary.get("aggregation_backend", "sqlite"),
+                summary.get("sort_memory_mb", "NA"),
+                summary.get("sqlite_cache_mb", "NA"), summary["aggregation_seconds"],
                 summary["clustering_seconds"], summary["wall_seconds"], time.monotonic() - start,
             )
         if not all(path.is_file() and path.stat().st_size > 0 for path in outputs):

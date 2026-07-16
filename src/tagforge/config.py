@@ -71,6 +71,8 @@ class TagForgeConfig:
     threads: int = 1
     barcode_workers: Optional[int] = None
     umi_aggregation_workers: Optional[int] = None
+    umi_aggregation_backend: str = "external_sort"
+    umi_sort_memory_mb: int = 512
     umi_workers: Optional[int] = None
     umi_batch_size: int = 5000
     umi_sqlite_cache_mb: int = 64
@@ -478,6 +480,8 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         int(umi_aggregation_workers_value)
         if umi_aggregation_workers_value is not None else None
     )
+    umi_aggregation_backend = str(perf.get("umi_aggregation_backend", "external_sort")).replace("-", "_")
+    umi_sort_memory_mb = int(perf.get("umi_sort_memory_mb", 512))
     umi_workers_value = perf.get("umi_workers")
     umi_workers = int(umi_workers_value) if umi_workers_value is not None else None
     umi_batch_size = int(perf.get("umi_batch_size", 5000))
@@ -486,6 +490,10 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         raise ConfigError("performance.barcode_workers must be >= 1")
     if umi_aggregation_workers is not None and umi_aggregation_workers < 1:
         raise ConfigError("performance.umi_aggregation_workers must be >= 1")
+    if umi_aggregation_backend not in {"external_sort", "sqlite"}:
+        raise ConfigError("performance.umi_aggregation_backend must be external_sort or sqlite")
+    if umi_sort_memory_mb < 1:
+        raise ConfigError("performance.umi_sort_memory_mb must be >= 1")
     if umi_workers is not None and umi_workers < 1:
         raise ConfigError("performance.umi_workers must be >= 1")
     if umi_batch_size < 1:
@@ -516,6 +524,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         quick_test_enabled=bool(quick.get("enabled", True)), quick_test_reads=quick_test_reads,
         threads=threads, barcode_workers=barcode_workers,
         umi_aggregation_workers=umi_aggregation_workers,
+        umi_aggregation_backend=umi_aggregation_backend, umi_sort_memory_mb=umi_sort_memory_mb,
         umi_workers=umi_workers, umi_batch_size=umi_batch_size,
         umi_sqlite_cache_mb=umi_sqlite_cache_mb,
         chunk_size=chunk_size, extraction_preview_reads=preview_reads,

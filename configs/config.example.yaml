@@ -86,9 +86,11 @@ performance:
   # barcode_workers: 2
   # Omit umi_workers to use the same value as threads. Lower it independently
   # when UMI-tools worker memory, rather than CPU, is the limiting resource.
-  # umi_aggregation_workers controls valid-read pre-aggregation before SQLite.
-  # Omit it to use min(threads, 4).
+  # UMI aggregation uses GNU sort by default. umi_aggregation_workers controls
+  # its parallelism; omit it to use min(threads, 4).
   # umi_aggregation_workers: 2
+  # umi_aggregation_backend: external_sort  # or sqlite for legacy compatibility
+  # umi_sort_memory_mb: 512
   # umi_workers: 2
   umi_batch_size: 5000
   umi_sqlite_cache_mb: 64
