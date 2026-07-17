@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import gzip
 import html
 import json
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
+from . import __version__
+from .barcode_correct import load_fb_annotation, load_whitelist_names
 from .config import TagForgeConfig
-from .io_utils import atomic_text, open_tsv, sample_dirs
+from .io_utils import atomic_text, open_tsv, sample_dirs, step_complete, write_tsv
 from .xlsx import write_xlsx
 
 
@@ -111,3 +115,167 @@ def batch_report(config: TagForgeConfig, sample_names):
     page = f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge batch</title><style>body{{background:#f6f1e8;color:#18202a;font:16px system-ui;margin:0}}main{{max-width:1150px;margin:auto;padding:50px}}h1{{font:700 48px Georgia}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}}.card{{background:white;border-radius:16px;padding:22px;box-shadow:0 8px 28px #33415518;display:grid;gap:10px}}span{{color:#64748b}}</style></head><body><main><p>TAGFORGE · BATCH SUMMARY</p><h1>{len(sample_names)} samples, forged cleanly.</h1><div class="grid">{cards}</div></main></body></html>'''
     with atomic_text(page_path) as h: h.write(page)
     return [xlsx,page_path]
+
+
+@contextmanager
+def _summary_lock(path: Path):
+    """Serialize rebuilds from independently finishing sample jobs."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _summary_inputs(config: TagForgeConfig, sample: str):
+    root = config.output_dir / sample
+    return root / "01_checkpoint" / "downsample.done", [
+        root / "03_corrected" / f"{sample}.barcode_correction_stats.tsv",
+        root / "05_detail" / f"{sample}.optimal_saturation_molecule_detail.tsv.gz",
+        root / "06_downsample" / f"{sample}.optimal_saturation_point.tsv",
+    ]
+
+
+def _barcode2_annotation_gap(config, sample, stats, barcode2_segments):
+    """Return whitelist reads, unannotated reads, and their barcode counts.
+
+    Existing correction traces are scanned at most once per trace/annotation
+    version.  The compact cache keeps subsequent summary refreshes cheap.
+    """
+    root = config.output_dir / sample
+    corrected = root / "03_corrected"
+    trace = corrected / f"{sample}.barcode_correction_trace.tsv.gz"
+    qc_path = corrected / f"{sample}.barcode2_annotation_qc.tsv"
+    detail_path = corrected / f"{sample}.barcode2_not_in_annotation.tsv.gz"
+    annotation_path = getattr(config, "fb_info", None)
+    dependencies = [path for path in (trace, annotation_path) if path and path.is_file()]
+    cache_current = (
+        qc_path.is_file() and detail_path.is_file() and dependencies
+        and min(qc_path.stat().st_mtime_ns, detail_path.stat().st_mtime_ns)
+        >= max(path.stat().st_mtime_ns for path in dependencies)
+    )
+    if cache_current:
+        qc = next(open_tsv(qc_path))
+        return int(qc["whitelist_reads"]), int(qc["not_in_annotation_reads"]), list(open_tsv(detail_path))
+
+    by_scope = {row["scope"]: row for row in stats}
+    # A historical run without a trace can still report the rate for its usual
+    # single barcode2 segment, but cannot recover the omitted sequences.
+    if not trace.is_file():
+        whitelist_reads = sum(int(by_scope.get(s.name, {}).get("valid_reads", 0) or 0) for s in barcode2_segments)
+        annotated = int(by_scope.get(f"final_{config.target_name('barcode2')}", {}).get("valid_reads", 0) or 0)
+        return whitelist_reads, max(0, whitelist_reads - annotated), []
+
+    annotation = load_fb_annotation(config)
+    segment_names = {segment.name for segment in barcode2_segments}
+    segment_order = {segment.name: index for index, segment in enumerate(barcode2_segments)}
+    counts = Counter(); whitelist_reads = 0
+    current_id = None; current = {}
+
+    def consume(values):
+        nonlocal whitelist_reads
+        if len(values) != len(segment_names):
+            return
+        sequence = "".join(values[name] for name in sorted(values, key=segment_order.__getitem__))
+        whitelist_reads += 1
+        if sequence not in annotation:
+            counts[sequence] += 1
+
+    with gzip.open(trace, "rt", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        header = next(reader)
+        columns = {name: index for index, name in enumerate(header)}
+        read_id_index = columns["read_id"]
+        segment_index = columns["segment_name"]
+        hit_index = columns["whitelist_hit"]
+        sequence_index = columns["corrected_sequence"]
+        for row in reader:
+            read_id = row[read_id_index]
+            if current_id is not None and read_id != current_id:
+                consume(current); current = {}
+            current_id = read_id
+            if row[segment_index] in segment_names and row[hit_index] == "true":
+                current[row[segment_index]] = row[sequence_index]
+    if current_id is not None:
+        consume(current)
+    details = [
+        {"barcode2_sequence": sequence, "reads_count": count}
+        for sequence, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    write_tsv(qc_path, ["whitelist_reads", "not_in_annotation_reads"], [{
+        "whitelist_reads": whitelist_reads, "not_in_annotation_reads": sum(counts.values()),
+    }])
+    write_tsv(detail_path, ["barcode2_sequence", "reads_count"], details, config.compression_level)
+    return whitelist_reads, sum(counts.values()), details
+
+
+def _completed_summary_samples(config: TagForgeConfig):
+    """Return samples in configuration order once their summary inputs exist."""
+    completed = []
+    for item in config.samples:
+        checkpoint, outputs = _summary_inputs(config, item.sample)
+        if step_complete(checkpoint, outputs, False, __version__):
+            completed.append(item.sample)
+    return completed
+
+
+def write_summary(config: TagForgeConfig):
+    """Atomically rebuild the dynamic multi-sample workbook without a checkpoint."""
+    output = config.output_dir / "00_summary.xlsx"
+    with _summary_lock(config.output_dir / ".summary.lock"):
+        samples = _completed_summary_samples(config)
+        barcode_segments = [s for s in config.segments if s.target in {"barcode1", "barcode2"}]
+        barcode2_segments = [s for s in config.segments if s.target == "barcode2"]
+        meta = [["Sample", "Total reads", *[f"{s.name} Valid rate" for s in barcode_segments],
+                 "Annotated Rate",
+                 "optimal_downsample_ratio", "sequencing_saturation", "reads_sampled",
+                 "umi_types", "umi_detected_once", "duplication_ratio"]]
+        feature_counts, all_features = {}, set()
+        missing_annotation_sheets = []
+        feature_column = f"{config.target_name('barcode2')}_name"
+        barcode2_names = {}
+        for segment in barcode2_segments:
+            if getattr(segment, "whitelist", None):
+                barcode2_names.update(load_whitelist_names(segment.whitelist))
+
+        def publish():
+            features = sorted(all_features)
+            count = [["Sample"] + features] + [
+                [sample] + [feature_counts[sample].get(feature, 0) for feature in features]
+                for sample in feature_counts
+            ]
+            write_xlsx(output, [("meta", meta), ("count", count)])
+            write_xlsx(config.output_dir / "01_FB_not_in_anno.xlsx", missing_annotation_sheets)
+
+        for sample in samples:
+            root = config.output_dir / sample
+            stats = list(open_tsv(root / "03_corrected" / f"{sample}.barcode_correction_stats.tsv"))
+            by_scope = {row["scope"]: row for row in stats}
+            whitelist_reads, missing_reads, missing_details = _barcode2_annotation_gap(
+                config, sample, stats, barcode2_segments)
+            point = next(open_tsv(root / "06_downsample" / f"{sample}.optimal_saturation_point.tsv"))
+            combined = by_scope.get("combined", {})
+            meta.append([sample, combined.get("total_reads", ""),
+                         *[by_scope.get(s.name, {}).get("valid_rate", "") for s in barcode_segments],
+                         (whitelist_reads - missing_reads) / whitelist_reads if whitelist_reads else 0,
+                         point.get("optimal_downsample_ratio", ""), point.get("max_sequencing_saturation", ""),
+                         point.get("reads_sampled", ""), point.get("umi_types", ""),
+                         point.get("umi_detected_once", ""), point.get("duplication_ratio", "")])
+            missing_annotation_sheets.append((sample, [["barcode2_name", "reads_count"]] + [
+                [barcode2_names.get(row["barcode2_sequence"], row["barcode2_sequence"]), row["reads_count"]]
+                for row in missing_details[:50]
+            ]))
+            # The optimal count matrix is the aggregation of the requested
+            # molecule detail, and is substantially smaller to read.
+            optimal_matrix = root / "04_matrix" / f"{sample}.optimal_saturation_count_matrix.tsv.gz"
+            counts = (
+                _matrix_summary(optimal_matrix)[1] if optimal_matrix.is_file() else
+                Counter(row[feature_column] for row in open_tsv(
+                    root / "05_detail" / f"{sample}.optimal_saturation_molecule_detail.tsv.gz"))
+            )
+            feature_counts[sample] = counts
+            all_features.update(counts)
+            publish()
+    return output, samples

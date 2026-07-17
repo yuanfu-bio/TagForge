@@ -12,7 +12,7 @@ from .external_tools import check_external_tools
 from .io_utils import sample_dirs, step_complete, touch_checkpoint
 from .logging_utils import sample_logger
 from .matrix import matrix_sample
-from .reports import batch_report, report_sample
+from .reports import batch_report, report_sample, write_summary
 from .umi_correct import dedup_sample
 
 
@@ -177,4 +177,8 @@ def run_pipeline(config: TagForgeConfig, sample_names, overwrite: bool = False):
         )
         for step in ("extract", "correct", "dedup", "matrix", "downsample", "report"):
             run_step(config, sample, step, overwrite)
+            # Array tasks publish completed samples immediately; the writer
+            # rescans all configured checkpoints under an interprocess lock.
+            if step == "downsample":
+                write_summary(config)
     batch_report(config, sample_names)

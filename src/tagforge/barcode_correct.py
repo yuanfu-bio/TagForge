@@ -98,12 +98,23 @@ class WhitelistCorrector:
 
 
 def load_whitelist(path: Path):
-    values = [line.strip().upper() for line in path.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
+    return list(load_whitelist_names(path))
+
+
+def load_whitelist_names(path: Path) -> Dict[str, str]:
+    """Read a sequence whitelist, optionally with ``name<TAB>sequence`` rows."""
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.strip().split("\t")
+        sequence = fields[-1].upper()
+        name = fields[0] if len(fields) > 1 else sequence
+        if sequence in values:
+            raise ConfigError(f"Whitelist contains duplicate entry: {sequence}")
+        values[sequence] = name
     if not values:
         raise ConfigError(f"Whitelist is empty: {path}")
-    duplicates = len(values) - len(set(values))
-    if duplicates:
-        raise ConfigError(f"Whitelist contains {duplicates} duplicate entries: {path}")
     return values
 
 

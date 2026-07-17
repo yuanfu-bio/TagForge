@@ -311,6 +311,12 @@ default it writes one `samples.tsv` plus one Slurm array script. Use
 generate the legacy one-script-per-sample files and `submit_all.sh`. Generated
 jobs activate the requested Conda environment before running TagForge.
 
+To rebuild the current cross-sample workbook without running any sample stage:
+
+```bash
+tagforge summary --config 00_config/config.yaml
+```
+
 ## Outputs
 
 Each sample gets these directories under `02_output/{sample}`:
@@ -332,6 +338,13 @@ barcode values; matrix feature columns are antibody names from the annotation.
 Counts are deduplicated corrected UMIs. `00_report/` at the
 project root contains the batch workbook (`meta` and bulk `counts` sheets) and
 batch HTML overview.
+
+`02_output/00_summary.xlsx` is rebuilt after each completed downsample stage
+(or with `tagforge summary`). Its `meta` sheet follows configuration order and
+contains total reads, barcode-segment valid rates, and optimal downsample
+metrics. Its `count` sheet contains each `FB_name` occurrence count in every
+sample's optimal-saturation molecule detail. It only reads completed checkpoints
+and never reruns sample computations.
 
 `02_extracted/{sample}.extraction_stats.tsv` contains per-segment Cutadapt QC:
 linker attempts, successes and failures, success rate, failure reasons, fixed

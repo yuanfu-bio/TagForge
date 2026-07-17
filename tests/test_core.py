@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +14,8 @@ from tagforge.config import ConfigError, CorrectionConfig, SegmentConfig, defaul
 from tagforge.downsample import _analysis_ratios, calculate_metrics
 from tagforge.extract import decode_method_payload, decode_segment_payload, extract_segment
 from tagforge.fastq import _physical_position, open_text, paired_fastq, paired_fastq_batches
+from tagforge.io_utils import touch_checkpoint
+from tagforge.reports import write_summary
 from tagforge.slurm import make_slurm
 from tagforge.quick_test import _take_leading_records
 from tagforge.umi_correct import _aggregated_tsv_cursor, _dedup_batch, _external_sort_aggregate, _group_batches, deduplicate_umis
@@ -179,6 +182,41 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(_analysis_ratios(config)), 38)
         self.assertEqual(_analysis_ratios(config)[0], 0.0)
         self.assertEqual(_analysis_ratios(config)[-1], 1.0)
+
+    def test_summary_rebuilds_completed_samples_in_config_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "02_output"
+            config = SimpleNamespace(output_dir=root, samples=[SimpleNamespace(sample="alpha"), SimpleNamespace(sample="zeta")], segments=[SimpleNamespace(name="CELL", target="barcode1"), SimpleNamespace(name="FB", target="barcode2")], target_name=lambda target: {"barcode1": "CELL", "barcode2": "FB"}[target])
+
+            def complete(sample, feature):
+                base = root / sample
+                stats = base / "03_corrected" / f"{sample}.barcode_correction_stats.tsv"
+                stats.parent.mkdir(parents=True)
+                stats.write_text("scope\ttotal_reads\tvalid_rate\nCELL\t100\t0.9\nFB\t100\t0.8\ncombined\t100\t0.7\n", encoding="utf-8")
+                point = base / "06_downsample" / f"{sample}.optimal_saturation_point.tsv"
+                point.parent.mkdir(parents=True)
+                point.write_text("sample\toptimal_downsample_ratio\tmax_sequencing_saturation\treads_sampled\tumi_types\tumi_detected_once\tduplication_ratio\n" + f"{sample}\t0.5\t60\t50\t20\t8\t30\n", encoding="utf-8")
+                detail = base / "05_detail" / f"{sample}.optimal_saturation_molecule_detail.tsv.gz"
+                detail.parent.mkdir(parents=True)
+                with gzip.open(detail, "wt", encoding="utf-8") as handle:
+                    handle.write(f"CELL\tFB_name\tcorrected_umi\treads_count_at_optimal_downsample\nA\t{feature}\tAAAA\t1\n")
+                checkpoint = base / "01_checkpoint" / "downsample.done"
+                checkpoint.parent.mkdir(parents=True)
+                touch_checkpoint(checkpoint, __version__)
+
+            complete("zeta", "Z_feature")
+            _, samples = write_summary(config)
+            self.assertEqual(samples, ["zeta"])
+            complete("alpha", "A_feature")
+            output, samples = write_summary(config)
+            self.assertEqual(samples, ["alpha", "zeta"])
+            with zipfile.ZipFile(output) as workbook:
+                meta = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
+                count = workbook.read("xl/worksheets/sheet2.xml").decode("utf-8")
+            self.assertLess(meta.index("alpha"), meta.index("zeta"))
+            self.assertIn("CELL Valid rate", meta)
+            self.assertIn("A_feature", count)
+            self.assertIn("Z_feature", count)
 
     def test_config_accepts_grouped_barcode_and_umi_sections(self):
         with tempfile.TemporaryDirectory() as td:

@@ -9,7 +9,7 @@ from .config import ConfigError, load_config
 from .external_tools import check_external_tools
 from .pipeline import run_pipeline, run_step
 from .quick_test import quick_test_sample
-from .reports import batch_report
+from .reports import batch_report, write_summary
 from .slurm import make_slurm
 
 
@@ -126,6 +126,8 @@ def parser():
     )
     for step in ("extract", "correct", "dedup", "matrix", "downsample", "report"):
         p = commands.add_parser(step, help=f"Run the {step} step"); _common(p)
+    summary = commands.add_parser("summary", help="Rebuild the multi-sample summary from completed samples")
+    summary.add_argument("--config", required=True, help="YAML configuration file")
     quick = commands.add_parser("quick-test", help="Inspect a small read subset without running the full pipeline")
     quick.add_argument("--config", required=True)
     quick.add_argument("--sample", action="append", help="Sample name (repeatable; default: all)")
@@ -188,6 +190,10 @@ def main(argv=None):
             else:
                 print(f"Generated {len(files)-1} Slurm jobs and {files[-1]}")
             return 0
+        if args.command == "summary":
+            output, samples = write_summary(config)
+            print(f"TagForge summary completed for {len(samples)} samples: {output}")
+            return 0
         names = _selected(config, args.sample)
         if args.threads is not None:
             if args.threads < 1:
@@ -221,8 +227,13 @@ def main(argv=None):
         else:
             if args.command in {"extract", "dedup"}:
                 check_external_tools()
-            for name in names: run_step(config, name, args.command, args.overwrite)
-            if args.command == "report": batch_report(config, names)
+            for name in names:
+                run_step(config, name, args.command, args.overwrite)
+                if args.command == "downsample":
+                    write_summary(config)
+            if args.command == "report":
+                batch_report(config, names)
+                write_summary(config)
         print(f"TagForge {args.command} completed for: {', '.join(names)}")
         return 0
     except (ConfigError, FileNotFoundError, ValueError, RuntimeError) as exc:
