@@ -46,6 +46,40 @@ def deduplicate_umis(counts: Dict[str, int], method: str = "directional", max_di
     return _assign_umis(counts, _umi_clusterer(method), max_distance)
 
 
+def _umi_components(counts: Dict[str, int], max_distance: int) -> Iterator[Dict[str, int]]:
+    """Yield independent Hamming-1 UMI components in deterministic order.
+
+    Directional correction can only merge UMI sequences connected by an edge at
+    the configured edit distance. For the standard one-base setting, separate
+    connected components are therefore safe to correct independently. This
+    avoids million-UMI calls to UMI-tools when nearly all UMIs are isolated.
+    """
+    bases = "ACGTN"
+    if max_distance != 1 or len(counts) < 2 or any(set(umi) - set(bases) for umi in counts):
+        yield counts
+        return
+    seen = set()
+    for seed in counts:
+        if seed in seen:
+            continue
+        component = {seed}
+        seen.add(seed)
+        pending = [seed]
+        while pending:
+            umi = pending.pop()
+            for index, base in enumerate(umi):
+                prefix, suffix = umi[:index], umi[index + 1:]
+                for replacement in bases:
+                    if replacement == base:
+                        continue
+                    neighbor = prefix + replacement + suffix
+                    if neighbor in counts and neighbor not in seen:
+                        seen.add(neighbor)
+                        component.add(neighbor)
+                        pending.append(neighbor)
+        yield {umi: counts[umi] for umi in sorted(component)}
+
+
 def molecule_fields(config: TagForgeConfig):
     return [
         config.target_name("barcode1"),
@@ -54,33 +88,42 @@ def molecule_fields(config: TagForgeConfig):
     ]
 
 
-def _group_batches(cursor: Iterable[tuple], batch_umis: int) -> Iterator[list]:
-    """Batch complete barcode groups without ever splitting a correction scope."""
+def _group_batches(cursor: Iterable[tuple], batch_umis: int, component_max_distance: int | None = None) -> Iterator[list]:
+    """Batch independent UMI components without splitting correction edges."""
     batch = []
     batch_size = 0
     key = None
     group = {}
-    for b1, b2, umi, n in cursor:
-        current = (b1, b2)
-        if key is not None and current != key:
-            if batch and batch_size + len(group) > batch_umis:
+
+    def add_components(group_key, umi_counts):
+        if component_max_distance is None:
+            return [(group_key, umi_counts)]
+        return [(group_key, component) for component in _umi_components(umi_counts, component_max_distance)]
+
+    def add_to_batches(items):
+        nonlocal batch, batch_size
+        for item in items:
+            component_size = len(item[1])
+            if batch and batch_size + component_size > batch_umis:
                 yield batch
                 batch = []
                 batch_size = 0
-            batch.append((key, group))
-            batch_size += len(group)
+            batch.append(item)
+            batch_size += component_size
             if batch_size >= batch_umis:
                 yield batch
                 batch = []
                 batch_size = 0
+
+    for b1, b2, umi, n in cursor:
+        current = (b1, b2)
+        if key is not None and current != key:
+            yield from add_to_batches(add_components(key, group))
             group = {}
         key = current
         group[umi] = n
     if key is not None:
-        if batch and batch_size + len(group) > batch_umis:
-            yield batch
-            batch = []
-        batch.append((key, group))
+        yield from add_to_batches(add_components(key, group))
     if batch:
         yield batch
 
@@ -242,7 +285,7 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
 
     def progress(status: str):
         elapsed = time.monotonic() - started
-        row = {"status": status, "valid_reads": reads, "groups": groups_processed, "total_groups": total_groups, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "molecules": molecules, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "requested_workers": requested_workers, "workers": workers, "aggregation_workers": aggregation_workers, "aggregation_records": total_raw_umis, "elapsed_seconds": f"{elapsed:.2f}"}
+        row = {"status": status, "valid_reads": reads, "groups": total_groups, "total_groups": total_groups, "components": groups_processed, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "molecules": molecules, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "requested_workers": requested_workers, "workers": workers, "aggregation_workers": aggregation_workers, "aggregation_records": total_raw_umis, "elapsed_seconds": f"{elapsed:.2f}"}
         write_tsv(progress_path, progress_fields, [row])
         logger.info("dedup_progress\tstatus=%s\tvalid_reads=%s\tgroups=%s\ttotal_groups=%s\traw_umis=%s\ttotal_raw_umis=%s\tmolecules=%s\tbatches_completed=%s\taggregation_records=%s\telapsed_seconds=%s", status, reads, groups_processed, total_groups, raw_umis_processed, total_raw_umis, molecules, batches_completed, total_raw_umis, row["elapsed_seconds"])
 
@@ -269,7 +312,9 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
                 logger.warning("dedup_parallel_fallback\trequested_workers=%s\tworkers=1\treason=%s", requested_workers, type(exc).__name__)
         logger.info("dedup_parallel_start\tbackend=umi_tools-UMIClusterer\trequested_workers=%s\tworkers=%s\tbatch_umis=%s\treads=%s\ttotal_raw_umis=%s\taggregation_workers=%s\taggregation_seconds=%.3f", requested_workers, workers, config.umi_batch_size, reads, total_raw_umis, aggregation_workers, aggregation_seconds)
         clustering_started = time.monotonic()
-        group_batches = _group_batches(_aggregated_tsv_cursor(aggregated_path), config.umi_batch_size)
+        group_batches = _group_batches(
+            _aggregated_tsv_cursor(aggregated_path), config.umi_batch_size, config.umi_max_distance,
+        )
         with atomic_text(output, config.compression_level) as handle:
             writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
             writer.writerow(fields)
@@ -291,7 +336,7 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
                     while pending: consume(pending.popleft().result())
         clustering_seconds = time.monotonic() - clustering_started
         progress("completed")
-        return output, {"valid_reads": reads, "molecules": molecules, "duplicates": reads - molecules, "groups": groups_processed, "total_groups": total_groups, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "requested_workers": requested_workers, "workers": workers, "requested_aggregation_workers": aggregation_workers, "aggregation_workers": aggregation_workers, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "umi_batch_size": config.umi_batch_size, "peak_batch_umis": peak_batch_umis, "aggregation_backend": "external_sort", "sort_memory_mb": config.umi_sort_memory_mb, "aggregation_seconds": aggregation_seconds, "clustering_seconds": clustering_seconds, "wall_seconds": time.monotonic() - started}
+        return output, {"valid_reads": reads, "molecules": molecules, "duplicates": reads - molecules, "groups": total_groups, "total_groups": total_groups, "components": groups_processed, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "requested_workers": requested_workers, "workers": workers, "requested_aggregation_workers": aggregation_workers, "aggregation_workers": aggregation_workers, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "umi_batch_size": config.umi_batch_size, "peak_batch_umis": peak_batch_umis, "aggregation_backend": "external_sort", "sort_memory_mb": config.umi_sort_memory_mb, "aggregation_seconds": aggregation_seconds, "clustering_seconds": clustering_seconds, "wall_seconds": time.monotonic() - started}
     finally:
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)

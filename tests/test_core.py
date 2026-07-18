@@ -172,6 +172,28 @@ class CoreTests(unittest.TestCase):
         self.assertEqual((groups, reads, raw_umis), (1, 5, 2))
         self.assertEqual(len(rows), 2)
 
+    def test_umi_group_batches_split_independent_hamming_components(self):
+        cursor = [
+            ("b1", "f1", "AAAA", 4),
+            ("b1", "f1", "AAAT", 1),
+            ("b1", "f1", "CCCC", 2),
+            ("b1", "f1", "GGGG", 3),
+        ]
+        batches = list(_group_batches(cursor, batch_umis=2, component_max_distance=1))
+        self.assertEqual([[sorted(counts) for _, counts in batch] for batch in batches], [
+            [["AAAA", "AAAT"]], [["CCCC"], ["GGGG"]],
+        ])
+        class FakeClusterer:
+            def __call__(self, counts, threshold):
+                return [[b"AAAA", b"AAAT"]] if b"AAAA" in counts else [[umi] for umi in counts]
+        with patch("tagforge.umi_correct._umi_clusterer", return_value=FakeClusterer()):
+            rows = []
+            for batch in batches:
+                rows.extend(_dedup_batch(batch, "directional", 1)[0])
+        self.assertEqual(rows, [
+            ("b1", "f1", "AAAA", 5, 2), ("b1", "f1", "CCCC", 2, 1), ("b1", "f1", "GGGG", 3, 1),
+        ])
+
     def test_downsample_metrics(self):
         self.assertEqual(calculate_metrics([3, 1, 0])[:3], (4, 2, 1))
         ratios = default_downsample_ratios()
