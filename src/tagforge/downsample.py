@@ -4,8 +4,10 @@ import csv
 import hashlib
 import html
 import json
+import multiprocessing
 import random
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from .config import TagForgeConfig
@@ -22,6 +24,11 @@ PROGRESS_FIELDS = [
     "duplication_ratio", "sequencing_saturation", "input_percent",
     "elapsed_seconds", "ratios_per_second", "eta_seconds", "estimated_finish",
 ]
+
+
+# Forked workers inherit the molecule counts copy-on-write, avoiding repeated
+# serialization of the complete vector for every ratio/repeat task.
+_WORKER_COUNTS: list[int] | None = None
 
 
 def _seed(base: int, sample: str, ratio: float, repeat: int) -> int:
@@ -69,6 +76,33 @@ def _sample_counts(counts: list[int], ratio: float, sample_name: str, repeat: in
         return list(counts)
     rng = random.Random(_seed(seed, sample_name, ratio, repeat))
     return [_binomial(count, ratio, rng) for count in counts]
+
+
+def _sample_metrics(counts: list[int], ratio: float, sample_name: str, repeat: int, seed: int):
+    """Sample and calculate metrics in one pass without retaining sampled counts."""
+    if ratio <= 0:
+        return 0, 0, 0, 0.0, 0.0
+    if ratio >= 1:
+        return calculate_metrics(counts)
+    rng = random.Random(_seed(seed, sample_name, ratio, repeat))
+    reads = molecules = singles = 0
+    for count in counts:
+        sampled = _binomial(count, ratio, rng)
+        if sampled <= 0:
+            continue
+        reads += sampled
+        molecules += 1
+        singles += 1 if sampled == 1 else 0
+    duplication = ((reads - molecules) / reads * 100) if reads else 0.0
+    saturation = ((1 - singles / molecules) * 100) if molecules else 0.0
+    return reads, molecules, singles, duplication, saturation
+
+
+def _parallel_sample_metrics(job: tuple[float, int, str, int]):
+    if _WORKER_COUNTS is None:
+        raise RuntimeError("downsample worker counts are not initialized")
+    ratio, repeat, sample_name, seed = job
+    return _sample_metrics(_WORKER_COUNTS, ratio, sample_name, repeat, seed)
 
 
 def _write_saturation_html(path: Path, sample_name: str, rows: list[dict]):
@@ -204,27 +238,33 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
         "random.binomialvariate" if hasattr(random.Random(), "binomialvariate") else "python-loop",
     )
 
+    jobs = [(ratio, repeat, sample_name, config.downsample_seed) for ratio in ratios
+            for repeat in ([0] if ratio in {0.0, 1.0} else range(1, config.downsample_repeats + 1))]
+    requested_workers = config.downsample_workers or config.threads
+    workers = min(requested_workers, len(jobs))
+    executor = None
+    if workers > 1 and "fork" in multiprocessing.get_all_start_methods():
+        global _WORKER_COUNTS
+        _WORKER_COUNTS = counts
+        executor = ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork"))
+        backend = "process-fork"
+    else:
+        workers = 1
+        backend = "serial"
+    logger.info("downsample_parallel_start\tbackend=%s\trequested_workers=%s\tworkers=%s\tratio_jobs=%s", backend, requested_workers, workers, len(jobs))
     metric_rows = []
     ratios_completed = 0
-    for ratio in ratios:
-        repeats = [0] if ratio in {0.0, 1.0} else range(1, config.downsample_repeats + 1)
-        for repeat in repeats:
-            sampled_counts = _sample_counts(counts, ratio, sample_name, repeat, config.downsample_seed)
-            supports = iter(sampled_counts)
-            reads, molecules, singles, duplication, saturation = calculate_metrics(supports)
-            row = {"sample": sample_name, "downsample_ratio": ratio, "reads_sampled": reads,
-                   "umi_types": molecules, "umi_detected_once": singles, "duplication_ratio": f"{duplication:.6f}",
-                   "sequencing_saturation": f"{saturation:.6f}", "repeat": repeat}
+    try:
+        results = executor.map(_parallel_sample_metrics, jobs) if executor else (_sample_metrics(counts, ratio, sample, repeat, seed) for ratio, repeat, sample, seed in jobs)
+        for (ratio, repeat, _, _), (reads, molecules, singles, duplication, saturation) in zip(jobs, results):
+            row = {"sample": sample_name, "downsample_ratio": ratio, "reads_sampled": reads, "umi_types": molecules, "umi_detected_once": singles, "duplication_ratio": f"{duplication:.6f}", "sequencing_saturation": f"{saturation:.6f}", "repeat": repeat}
             metric_rows.append(row)
             ratios_completed += 1
-            record_progress(
-                "sampling", molecules_loaded=len(records), total_reads=total_reads,
-                ratios_completed=ratios_completed, total_ratios=total_ratio_jobs,
-                downsample_ratio=ratio, repeat=repeat, reads_sampled=reads,
-                umi_types=molecules, umi_detected_once=singles,
-                duplication_ratio=f"{duplication:.6f}",
-                sequencing_saturation=f"{saturation:.6f}",
-            )
+            record_progress("sampling", molecules_loaded=len(records), total_reads=total_reads, ratios_completed=ratios_completed, total_ratios=total_ratio_jobs, downsample_ratio=ratio, repeat=repeat, reads_sampled=reads, umi_types=molecules, umi_detected_once=singles, duplication_ratio=f"{duplication:.6f}", sequencing_saturation=f"{saturation:.6f}")
+    finally:
+        if executor:
+            executor.shutdown()
+        _WORKER_COUNTS = None
     write_tsv(metrics_path, METRIC_FIELDS, metric_rows)
     _write_saturation_html(html_path, sample_name, metric_rows)
     optimal = max(metric_rows, key=lambda row: (float(row["sequencing_saturation"]), -float(row["downsample_ratio"]), -int(row["repeat"])))

@@ -70,6 +70,7 @@ class TagForgeConfig:
     quick_test_reads: int = 10000
     threads: int = 1
     barcode_workers: Optional[int] = None
+    downsample_workers: Optional[int] = None
     umi_aggregation_workers: Optional[int] = None
     umi_aggregation_backend: str = "external_sort"
     umi_sort_memory_mb: int = 512
@@ -475,6 +476,8 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         raise ConfigError("performance.threads must be >= 1")
     barcode_workers_value = perf.get("barcode_workers")
     barcode_workers = int(barcode_workers_value) if barcode_workers_value is not None else None
+    downsample_workers_value = perf.get("downsample_workers")
+    downsample_workers = int(downsample_workers_value) if downsample_workers_value is not None else None
     umi_aggregation_workers_value = perf.get("umi_aggregation_workers")
     umi_aggregation_workers = (
         int(umi_aggregation_workers_value)
@@ -488,6 +491,8 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
     umi_sqlite_cache_mb = int(perf.get("umi_sqlite_cache_mb", 64))
     if barcode_workers is not None and barcode_workers < 1:
         raise ConfigError("performance.barcode_workers must be >= 1")
+    if downsample_workers is not None and downsample_workers < 1:
+        raise ConfigError("performance.downsample_workers must be >= 1")
     if umi_aggregation_workers is not None and umi_aggregation_workers < 1:
         raise ConfigError("performance.umi_aggregation_workers must be >= 1")
     if umi_aggregation_backend not in {"external_sort", "sqlite"}:
@@ -522,7 +527,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         downsample_enabled=bool(ds.get("enabled", True)), downsample_ratios=sorted(set(ratios)),
         downsample_seed=int(ds.get("random_seed", 12345)), downsample_repeats=downsample_repeats,
         quick_test_enabled=bool(quick.get("enabled", True)), quick_test_reads=quick_test_reads,
-        threads=threads, barcode_workers=barcode_workers,
+        threads=threads, barcode_workers=barcode_workers, downsample_workers=downsample_workers,
         umi_aggregation_workers=umi_aggregation_workers,
         umi_aggregation_backend=umi_aggregation_backend, umi_sort_memory_mb=umi_sort_memory_mb,
         umi_workers=umi_workers, umi_batch_size=umi_batch_size,

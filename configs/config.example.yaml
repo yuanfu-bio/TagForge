@@ -84,6 +84,8 @@ performance:
   # Barcode whitelist correction is parallelized by extracted-read chunks.
   # Omit barcode_workers to use the same value as threads.
   # barcode_workers: 2
+  # Downsample ratio/repeat jobs use forked processes; omit to use threads.
+  # downsample_workers: 2
   # Omit umi_workers to use the same value as threads. Lower it independently
   # when UMI-tools worker memory, rather than CPU, is the limiting resource.
   # UMI aggregation uses GNU sort by default. umi_aggregation_workers controls
