@@ -36,7 +36,7 @@ def report_sample(config: TagForgeConfig, sample_name: str):
     dirs = sample_dirs(config.output_dir, sample_name)
     extraction_stats = dirs["extracted"] / f"{sample_name}.extraction_stats.tsv"
     stats = dirs["corrected"] / f"{sample_name}.barcode_correction_stats.tsv"
-    molecules = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
+    molecules = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
     metrics = dirs["downsample"] / f"{sample_name}.downsample_metrics.tsv"
     point = dirs["downsample"] / f"{sample_name}.optimal_saturation_point.tsv"
     matrix = dirs["matrix"] / f"{sample_name}.raw_count_matrix.tsv.gz"
@@ -231,7 +231,9 @@ def write_summary(config: TagForgeConfig):
         meta = [["Sample", "Total reads", *[f"{s.name} Valid rate" for s in barcode_segments],
                  "Annotated Rate",
                  "optimal_downsample_ratio", "sequencing_saturation", "reads_sampled",
-                 "umi_types", "umi_detected_once", "duplication_ratio"]]
+                 "umi_types", "umi_detected_once", "duplication_ratio"] + (
+                    ["MP Ratio", "Multi-PI ratio", "Dominant ratio", "Multi-PI FB_UMIs", "Retained molecules"]
+                    if getattr(config, "pi_seq_enabled", False) else [])]
         feature_counts, all_features = {}, set()
         missing_annotation_sheets = []
         feature_column = f"{config.target_name('barcode2')}_name"
@@ -257,12 +259,17 @@ def write_summary(config: TagForgeConfig):
                 config, sample, stats, barcode2_segments)
             point = next(open_tsv(root / "06_downsample" / f"{sample}.optimal_saturation_point.tsv"))
             combined = by_scope.get("combined", {})
+            pi_qc = next(open_tsv(root / "05_detail" / f"{sample}.pi_seq_qc.tsv"), {}) if getattr(config, "pi_seq_enabled", False) else {}
             meta.append([sample, combined.get("total_reads", ""),
                          *[by_scope.get(s.name, {}).get("valid_rate", "") for s in barcode_segments],
                          (whitelist_reads - missing_reads) / whitelist_reads if whitelist_reads else 0,
                          point.get("optimal_downsample_ratio", ""), point.get("max_sequencing_saturation", ""),
                          point.get("reads_sampled", ""), point.get("umi_types", ""),
-                         point.get("umi_detected_once", ""), point.get("duplication_ratio", "")])
+                         point.get("umi_detected_once", ""), point.get("duplication_ratio", "")] + (
+                            [pi_qc.get("mp_ratio", ""), pi_qc.get("multi_pi_ratio", ""),
+                             pi_qc.get("dominant_ratio", ""), pi_qc.get("multi_pi_fb_umis", ""),
+                             pi_qc.get("retained_molecules", "")]
+                            if getattr(config, "pi_seq_enabled", False) else []))
             missing_annotation_sheets.append((sample, [["barcode2_name", "reads_count"]] + [
                 [barcode2_names.get(row["barcode2_sequence"], row["barcode2_sequence"]), row["reads_count"]]
                 for row in missing_details[:50]

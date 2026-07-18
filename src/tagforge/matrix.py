@@ -50,7 +50,7 @@ def matrix_from_molecules(
 
 def matrix_sample(config: TagForgeConfig, sample_name: str):
     dirs = sample_dirs(config.output_dir, sample_name)
-    source = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
+    source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
     output = dirs["matrix"] / f"{sample_name}.raw_count_matrix.tsv.gz"
     return output, matrix_from_molecules(
         source, output, config.compression_level,

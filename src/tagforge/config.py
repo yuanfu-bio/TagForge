@@ -77,6 +77,8 @@ class TagForgeConfig:
     umi_workers: Optional[int] = None
     umi_batch_size: int = 5000
     umi_sqlite_cache_mb: int = 64
+    pi_seq_enabled: bool = False
+    pi_seq_dominance_threshold: float = 0.8
     chunk_size: int = 10000
     extraction_preview_reads: int = 1000
     compression_level: int = 3
@@ -458,6 +460,17 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
     perf = raw.get("performance") or {}
     resume = raw.get("resume") or {}
     output = raw.get("output") or {}
+    library = raw.get("library") or {}
+    if not isinstance(library, dict):
+        library = {"type": library}
+    library_type = str(library.get("type", raw.get("library_type", ""))).strip().lower().replace("_", "-")
+    pi_seq = raw.get("pi_seq") or {}
+    if not isinstance(pi_seq, dict):
+        raise ConfigError("pi_seq must be a mapping")
+    pi_seq_enabled = library_type == "pi-seq"
+    pi_seq_dominance_threshold = float(pi_seq.get("dominance_threshold", 0.8))
+    if not 0 <= pi_seq_dominance_threshold <= 1:
+        raise ConfigError("pi_seq.dominance_threshold must be in [0, 1]")
     quick = raw.get("quick_test") or {}
     ratios_value = ds.get("ratios", "auto")
     if ratios_value is None or (isinstance(ratios_value, str) and ratios_value.lower() in {"auto", "log_grid"}):
@@ -532,6 +545,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         umi_aggregation_backend=umi_aggregation_backend, umi_sort_memory_mb=umi_sort_memory_mb,
         umi_workers=umi_workers, umi_batch_size=umi_batch_size,
         umi_sqlite_cache_mb=umi_sqlite_cache_mb,
+        pi_seq_enabled=pi_seq_enabled, pi_seq_dominance_threshold=pi_seq_dominance_threshold,
         chunk_size=chunk_size, extraction_preview_reads=preview_reads,
         compression_level=int(perf.get("compression_level", 3)),
         overwrite=bool(resume.get("overwrite", False)), trace_enabled=bool(output.get("correction_trace", True)), raw=raw,

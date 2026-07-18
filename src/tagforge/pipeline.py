@@ -28,7 +28,8 @@ def expected_outputs(config: TagForgeConfig, sample: str, step: str):
             d["extracted"] / f"{sample}.extraction_stats.tsv",
         ],
         "correct": [d["detail"] / f"{sample}.valid_reads.tsv.gz", d["corrected"] / f"{sample}.barcode_correction_stats.tsv"] + ([d["corrected"] / f"{sample}.barcode_correction_trace.tsv.gz"] if config.trace_enabled else []),
-        "dedup": [d["detail"] / f"{sample}.molecule_detail.tsv.gz"],
+        "dedup": [d["detail"] / f"{sample}.molecule_detail.tsv.gz"] + (
+            [d["detail"] / f"{sample}.molecule_detail.rmMP.tsv.gz", d["detail"] / f"{sample}.pi_seq_qc.tsv"] if config.pi_seq_enabled else []),
         "matrix": [d["matrix"] / f"{sample}.raw_count_matrix.tsv.gz"],
         "downsample": [
             d["downsample"] / f"{sample}.downsample_metrics.tsv",

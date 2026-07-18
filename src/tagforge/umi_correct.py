@@ -15,6 +15,7 @@ from typing import Dict, Iterable, Iterator
 from .config import ConfigError, TagForgeConfig
 from .io_utils import atomic_text, open_tsv, sample_dirs, write_tsv
 from .logging_utils import sample_logger
+from .pi_seq import filter_pi_seq_molecules
 
 
 def _umi_clusterer(method: str):
@@ -336,6 +337,9 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
                     while pending: consume(pending.popleft().result())
         clustering_seconds = time.monotonic() - clustering_started
         progress("completed")
+        if config.pi_seq_enabled:
+            pi_stats = filter_pi_seq_molecules(config, sample_name, output)
+            logger.info("pi_seq_summary\ttotal_fb_umis=%s\tmulti_pi_ratio=%s\tmp_ratio=%s", pi_stats["total_fb_umis"], pi_stats["multi_pi_ratio"], pi_stats["mp_ratio"])
         return output, {"valid_reads": reads, "molecules": molecules, "duplicates": reads - molecules, "groups": total_groups, "total_groups": total_groups, "components": groups_processed, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "requested_workers": requested_workers, "workers": workers, "requested_aggregation_workers": aggregation_workers, "aggregation_workers": aggregation_workers, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "umi_batch_size": config.umi_batch_size, "peak_batch_umis": peak_batch_umis, "aggregation_backend": "external_sort", "sort_memory_mb": config.umi_sort_memory_mb, "aggregation_seconds": aggregation_seconds, "clustering_seconds": clustering_seconds, "wall_seconds": time.monotonic() - started}
     finally:
         if executor is not None:
@@ -598,6 +602,9 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         db_path.unlink(missing_ok=True)
         Path(str(db_path) + "-journal").unlink(missing_ok=True)
     wall_seconds = time.monotonic() - started
+    if config.pi_seq_enabled:
+        pi_stats = filter_pi_seq_molecules(config, sample_name, output)
+        logger.info("pi_seq_summary\ttotal_fb_umis=%s\tmulti_pi_ratio=%s\tmp_ratio=%s", pi_stats["total_fb_umis"], pi_stats["multi_pi_ratio"], pi_stats["mp_ratio"])
     return output, {
         "valid_reads": reads,
         "molecules": molecules,

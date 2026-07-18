@@ -150,7 +150,7 @@ Plotly.newPlot('saturation', [
 def downsample_sample(config: TagForgeConfig, sample_name: str):
     dirs = sample_dirs(config.output_dir, sample_name)
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
-    source = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
+    source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
     metrics_path = dirs["downsample"] / f"{sample_name}.downsample_metrics.tsv"
     point_path = dirs["downsample"] / f"{sample_name}.optimal_saturation_point.tsv"
     html_path = dirs["downsample"] / f"{sample_name}.downsample.html"
