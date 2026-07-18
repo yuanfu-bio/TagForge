@@ -129,10 +129,10 @@ def _write_saturation_html(path: Path, sample_name: str, rows: list[dict]):
 <script>
 const data = {json.dumps(payload)};
 Plotly.newPlot('saturation', [
-  {{x:data.ratios,y:data.saturation,name:'Sequencing Saturation',mode:'lines+markers',yaxis:'y3',line:{{color:'#5963f5',width:3}}}},
-  {{x:data.ratios,y:data.duplication,name:'Duplication Ratio',mode:'lines+markers',yaxis:'y3',line:{{color:'#e44c39',width:3}}}},
-  {{x:data.ratios,y:data.umi_types,name:'UMI Types',mode:'lines+markers',yaxis:'y2',line:{{color:'#37c58d',width:3}}}},
-  {{x:data.ratios,y:data.singletons,name:'UMI detected once',mode:'lines+markers',yaxis:'y',line:{{color:'#9c59f5',width:3}}}}
+  {{x:data.ratios,y:data.saturation,name:'Sequencing Saturation',mode:'lines',yaxis:'y3',line:{{color:'#5963f5',width:3}}}},
+  {{x:data.ratios,y:data.duplication,name:'Duplication Ratio',mode:'lines',yaxis:'y3',line:{{color:'#e44c39',width:3}}}},
+  {{x:data.ratios,y:data.umi_types,name:'UMI Types',mode:'lines',yaxis:'y2',line:{{color:'#37c58d',width:3}}}},
+  {{x:data.ratios,y:data.singletons,name:'UMI detected once',mode:'lines',yaxis:'y',line:{{color:'#9c59f5',width:3}}}}
 ], {{
   template:'plotly_white',
   height:540,
