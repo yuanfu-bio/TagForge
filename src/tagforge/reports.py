@@ -144,6 +144,10 @@ def _barcode2_annotation_gap(config, sample, stats, barcode2_segments):
     Existing correction traces are scanned at most once per trace/annotation
     version.  The compact cache keeps subsequent summary refreshes cheap.
     """
+    if getattr(config, "barcode2_sequence_only", False):
+        by_scope = {row["scope"]: row for row in stats}
+        valid_reads = int(by_scope.get(f"final_{config.target_name('barcode2')}", {}).get("valid_reads", 0) or 0)
+        return valid_reads, 0, []
     root = config.output_dir / sample
     corrected = root / "03_corrected"
     trace = corrected / f"{sample}.barcode_correction_trace.tsv.gz"

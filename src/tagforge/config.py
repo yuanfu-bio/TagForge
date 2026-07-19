@@ -55,7 +55,8 @@ class TagForgeConfig:
     output_dir: Path
     samples: List[SampleConfig]
     segments: List[SegmentConfig]
-    fb_info: Path
+    fb_info: Optional[Path]
+    barcode2_sequence_only: bool = False
     fb_id_column: str = "FB_ID"
     fb_sequence_column: str = "sequence"
     fb_name_column: str = "antibody_name"
@@ -79,6 +80,8 @@ class TagForgeConfig:
     umi_sqlite_cache_mb: int = 64
     pi_seq_enabled: bool = False
     pi_seq_dominance_threshold: float = 0.8
+    pb_cb_enabled: bool = False
+    pb_cb_dominance_threshold: float = 0.8
     chunk_size: int = 10000
     extraction_preview_reads: int = 1000
     compression_level: int = 3
@@ -454,7 +457,9 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
                     if group_annotation:
                         break
     ann = group_annotation or raw.get("barcode2_annotation") or {}
-    fb_info = _resolve(workdir, ann.get("fb_info"))
+    barcode2_raw = raw.get("barcode2") if isinstance(raw.get("barcode2"), dict) else {}
+    barcode2_sequence_only = _as_bool(barcode2_raw.get("sequence_only", False))
+    fb_info = None if barcode2_sequence_only else _resolve(workdir, ann.get("fb_info"))
     umi = raw.get("correction_umi") or (raw.get("umi") if isinstance(raw.get("umi"), dict) else {}) or {}
     ds = raw.get("downsample") or {}
     perf = raw.get("performance") or {}
@@ -471,6 +476,30 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
     pi_seq_dominance_threshold = float(pi_seq.get("dominance_threshold", 0.8))
     if not 0 <= pi_seq_dominance_threshold <= 1:
         raise ConfigError("pi_seq.dominance_threshold must be in [0, 1]")
+    pb_cb = raw.get("pb_cb") or {}
+    if not isinstance(pb_cb, dict):
+        raise ConfigError("pb_cb must be a mapping")
+    pb_cb_enabled = library_type == "pb-cb"
+    pb_cb_dominance_threshold = float(pb_cb.get("dominance_threshold", 0.8))
+    if not 0 <= pb_cb_dominance_threshold <= 1:
+        raise ConfigError("pb_cb.dominance_threshold must be in [0, 1]")
+    if int(pb_cb.get("min_parent_reads", 5)) < 1:
+        raise ConfigError("pb_cb.min_parent_reads must be >= 1")
+    if float(pb_cb.get("parent_child_ratio", 10)) < 1:
+        raise ConfigError("pb_cb.parent_child_ratio must be >= 1")
+    if pb_cb_enabled:
+        if not barcode2_sequence_only:
+            raise ConfigError("PB-CB libraries require barcode2.sequence_only: true")
+        cb_segments = [segment for segment in segments if segment.target == "barcode2"]
+        if any(segment.correction.enabled for segment in cb_segments):
+            raise ConfigError(
+                "PB-CB libraries require barcode2 correction.enabled: false; "
+                "CB is retained as the observed sequence rather than searched against its whitelist"
+            )
+        if any(segment.whitelist is not None for segment in cb_segments):
+            raise ConfigError(
+                "PB-CB libraries must not set a barcode2 whitelist; remove it to avoid loading the large CB whitelist"
+            )
     quick = raw.get("quick_test") or {}
     ratios_value = ds.get("ratios", "auto")
     if ratios_value is None or (isinstance(ratios_value, str) and ratios_value.lower() in {"auto", "log_grid"}):
@@ -532,7 +561,8 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         raise ConfigError("downsample.repeats must be >= 1")
     config = TagForgeConfig(
         path=path, workdir=workdir, output_dir=output_dir, samples=samples, segments=segments,
-        fb_info=fb_info, fb_id_column=str(ann.get("id_column", "FB_ID")),
+        fb_info=fb_info, barcode2_sequence_only=barcode2_sequence_only,
+        fb_id_column=str(ann.get("id_column", "FB_ID")),
         fb_sequence_column=str(ann.get("sequence_column", "sequence")),
         fb_name_column=str(ann.get("name_column", "antibody_name")),
         allow_duplicate_names=bool(ann.get("allow_duplicate_names", False)),
@@ -546,6 +576,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         umi_workers=umi_workers, umi_batch_size=umi_batch_size,
         umi_sqlite_cache_mb=umi_sqlite_cache_mb,
         pi_seq_enabled=pi_seq_enabled, pi_seq_dominance_threshold=pi_seq_dominance_threshold,
+        pb_cb_enabled=pb_cb_enabled, pb_cb_dominance_threshold=pb_cb_dominance_threshold,
         chunk_size=chunk_size, extraction_preview_reads=preview_reads,
         compression_level=int(perf.get("compression_level", 3)),
         overwrite=bool(resume.get("overwrite", False)), trace_enabled=bool(output.get("correction_trace", True)), raw=raw,
@@ -553,7 +584,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
     if check_files:
         missing = [p for s in samples for p in (s.r1, s.r2) if not p.is_file()]
         missing += [s.whitelist for s in segments if s.whitelist and not s.whitelist.is_file()]
-        if not fb_info.is_file():
+        if fb_info and not fb_info.is_file():
             missing.append(fb_info)
         if missing:
             raise ConfigError("Missing input file(s):\n  " + "\n  ".join(str(p) for p in missing))

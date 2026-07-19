@@ -359,6 +359,55 @@ filters, and frozen header rows.
 
 ## UMI and saturation definitions
 
+## PB--CB libraries without CB-whitelist correction
+
+For a PB--CB library, where PB has a manageable whitelist but CB has a very
+large whitelist, configure CB as an observed sequence instead of correcting it:
+
+```yaml
+library:
+  type: pb-cb
+pb_cb:
+  dominance_threshold: 0.8
+  observed_correction: true
+  min_parent_reads: 5
+  parent_child_ratio: 10
+barcode1:
+  name: PB
+  # PB segments and their whitelist/correction go here.
+barcode2:
+  name: CB
+  sequence_only: true
+  segments:
+    - segment: CB
+      read: R2
+      method: fixed
+      start: 0
+      length: 16
+      correction:
+        enabled: false
+```
+
+`tagforge run` performs extraction, PB correction, UMI deduplication, and
+`pair-map` only; it intentionally does not build a potentially enormous
+PB-by-CB matrix. CB sequence lookup and approximate whitelist correction are
+skipped entirely. The map uses UMI-deduplicated `reads_count` as evidence.
+A PB is assigned to its highest-support CB only when its support fraction is
+strictly greater than `dominance_threshold` (so 80% itself is not retained).
+Before this decision, low-support observed CBs are merged only into a unique,
+high-support Hamming-1 parent. One `N` is treated as a wildcard; sequences
+with multiple `N`s remain unchanged. No CB whitelist is loaded.
+
+Outputs in `04_matrix/` are:
+
+- `{sample}.pb_cb_mapping.tsv.gz`: all observed PB--CB pairs and support.
+- `{sample}.pb_cb_map.tsv.gz`: retained one-CB-per-PB map, including support
+  totals and `dominant_ratio`.
+- `{sample}.cb_pb_counts.tsv.gz`: retained PB count for every CB.
+- `{sample}.cb_pb_count_distribution.tsv`: distribution of CBs by retained PB
+  count.
+- `{sample}.cb_observed_correction.tsv.gz`: post-dedup CB aliases.
+
 UMIs are grouped by UMI-tools within each final `barcode1.name`–antibody pair. Directional mode
 uses an edge from a more abundant UMI `A` to a neighbor `B` when their Hamming
 distance is within the threshold and `count(A) >= 2*count(B)-1`.

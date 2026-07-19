@@ -11,6 +11,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
+from itertools import chain
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
@@ -119,16 +120,34 @@ def load_whitelist_names(path: Path) -> Dict[str, str]:
 
 
 def load_fb_annotation(config: TagForgeConfig) -> Dict[str, str]:
+    if getattr(config, "barcode2_sequence_only", False):
+        return {}
+    if config.fb_info is None:
+        raise ConfigError("barcode2 annotation is required unless barcode2.sequence_only is true")
     with open(config.fb_info, encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
         required = {config.fb_id_column, config.fb_sequence_column, config.fb_name_column}
-        missing = required - set(reader.fieldnames or [])
-        if missing:
-            raise ConfigError(f"FB annotation missing column(s): {', '.join(sorted(missing))}")
+        reader = csv.reader(handle, delimiter="\t")
+        first_row = next(reader, None)
+        if first_row is None:
+            raise ConfigError(f"FB annotation is empty: {config.fb_info}")
+
+        has_header = required.issubset(set(first_row))
+        if has_header:
+            rows = csv.DictReader(handle, fieldnames=first_row, delimiter="\t")
+        else:
+            if len(first_row) < 2:
+                raise ConfigError("Headerless FB annotation requires at least ID and sequence columns")
+            # Historical 10x-style files have no header: ID, sequence, name.
+            # Use the sequence as the name when the optional third column is absent.
+            rows = chain((first_row,), reader)
         mapping, names = {}, set()
-        for row in reader:
-            sequence = row[config.fb_sequence_column].strip().upper()
-            name = row[config.fb_name_column].strip()
+        for row in rows:
+            if has_header:
+                sequence = row[config.fb_sequence_column].strip().upper()
+                name = row[config.fb_name_column].strip()
+            else:
+                sequence = row[1].strip().upper()
+                name = row[2].strip() if len(row) > 2 else sequence
             if sequence in mapping:
                 raise ConfigError(f"Duplicate FB sequence in annotation: {sequence}")
             if name in names and not config.allow_duplicate_names:
@@ -225,7 +244,9 @@ def valid_fields(config: TagForgeConfig):
 
 def _correction_fingerprint(config: TagForgeConfig, source: Path) -> str:
     digest = hashlib.sha256(config.path.read_bytes())
-    dependencies = [source, config.fb_info]
+    dependencies = [source]
+    if config.fb_info is not None:
+        dependencies.append(config.fb_info)
     dependencies.extend(
         segment.whitelist for segment in config.segments if segment.whitelist is not None
     )
@@ -302,7 +323,7 @@ def _correct_row(row, config, correctors, annotation, counters, summary):
     umi_segments = [segment for segment in config.segments if segment.target == "umi"]
     umi_values = decode_segment_payload(row[segment_columns["umi"]], umi_segments)
     umi = "".join(umi_values.get(segment.name, "") for segment in umi_segments)
-    fb_name = annotation.get(values["barcode2"], "")
+    fb_name = values["barcode2"] if getattr(config, "barcode2_sequence_only", False) else annotation.get(values["barcode2"], "")
     if values["barcode1"]:
         summary["barcode1_valid"] += 1
     if values["barcode2"] and fb_name:

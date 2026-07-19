@@ -9,12 +9,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tagforge import __version__
-from tagforge.barcode_correct import WhitelistCorrector
+from tagforge.barcode_correct import WhitelistCorrector, load_fb_annotation
 from tagforge.config import ConfigError, CorrectionConfig, SegmentConfig, default_downsample_ratios, load_config
 from tagforge.downsample import _analysis_ratios, calculate_metrics
 from tagforge.extract import decode_method_payload, decode_segment_payload, extract_segment
 from tagforge.fastq import _physical_position, open_text, paired_fastq, paired_fastq_batches
-from tagforge.io_utils import touch_checkpoint
+from tagforge.io_utils import sample_dirs, touch_checkpoint
+from tagforge.matrix import _observed_cb_aliases, pair_mapping_sample
 from tagforge.reports import write_summary
 from tagforge.slurm import make_slurm
 from tagforge.quick_test import _take_leading_records
@@ -22,6 +23,129 @@ from tagforge.umi_correct import _aggregated_tsv_cursor, _dedup_batch, _external
 
 
 class CoreTests(unittest.TestCase):
+    def test_load_fb_annotation_without_header(self):
+        with tempfile.TemporaryDirectory() as td:
+            annotation_path = Path(td) / "barcode2.tsv"
+            annotation_path.write_text("CB0000001\tAAAC\tAAAC\nCB0000002\tCCGG\tCCGG\n", encoding="utf-8")
+            config = SimpleNamespace(
+                fb_info=annotation_path,
+                fb_id_column="FB_ID",
+                fb_sequence_column="sequence",
+                fb_name_column="antibody_name",
+                allow_duplicate_names=False,
+            )
+            self.assertEqual(load_fb_annotation(config), {"AAAC": "AAAC", "CCGG": "CCGG"})
+
+    def test_pair_mapping_aggregates_molecules_and_reads(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = SimpleNamespace(
+                output_dir=Path(td), compression_level=3,
+                target_name=lambda role: {"barcode1": "PB", "barcode2": "CB"}[role],
+            )
+            dirs = sample_dirs(config.output_dir, "sample")
+            with gzip.open(dirs["detail"] / "sample.molecule_detail.tsv.gz", "wt", encoding="utf-8") as handle:
+                handle.write("PB\tCB_name\tcorrected_umi\treads_count\traw_umi_count\n")
+                handle.write("PB1\tCB1\tUMI1\t3\t3\n")
+                handle.write("PB1\tCB1\tUMI2\t2\t2\n")
+                handle.write("PB1\tCB2\tUMI3\t5\t5\n")
+            output = pair_mapping_sample(config, "sample")
+            with gzip.open(output, "rt", encoding="utf-8") as handle:
+                self.assertEqual(handle.read().splitlines(), [
+                    "PB\tCB\tmolecule_count\treads_count",
+                    "PB1\tCB1\t2\t5",
+                    "PB1\tCB2\t1\t5",
+                ])
+
+    def test_pb_cb_map_keeps_only_dominant_cb_and_reports_distribution(self):
+        with tempfile.TemporaryDirectory() as td:
+            config = SimpleNamespace(
+                output_dir=Path(td), compression_level=3, pb_cb_enabled=True,
+                pb_cb_dominance_threshold=0.8,
+                target_name=lambda role: {"barcode1": "PB", "barcode2": "CB"}[role],
+            )
+            dirs = sample_dirs(config.output_dir, "sample")
+            with gzip.open(dirs["detail"] / "sample.molecule_detail.tsv.gz", "wt", encoding="utf-8") as handle:
+                handle.write("PB\tCB_name\tcorrected_umi\treads_count\traw_umi_count\n")
+                handle.write("PB1\tCB1\tU1\t9\t1\n")
+                handle.write("PB1\tCB2\tU2\t1\t1\n")
+                handle.write("PB2\tCB1\tU3\t8\t1\n")
+                handle.write("PB2\tCB2\tU4\t2\t1\n")
+            output = pair_mapping_sample(config, "sample")
+            self.assertEqual(output.name, "sample.pb_cb_map.tsv.gz")
+            with gzip.open(output, "rt", encoding="utf-8") as handle:
+                self.assertEqual(handle.read().splitlines()[1], "PB1\tCB1\t1\t9\t2\t10\t0.9")
+            with gzip.open(dirs["matrix"] / "sample.cb_pb_counts.tsv.gz", "rt", encoding="utf-8") as handle:
+                self.assertEqual(handle.read().splitlines(), ["CB\tpb_count", "CB1\t1"])
+            self.assertEqual(
+                (dirs["matrix"] / "sample.cb_pb_count_distribution.tsv").read_text(encoding="utf-8").splitlines(),
+                ["pb_count\tcb_count", "1\t1"],
+            )
+
+    def test_observed_cb_correction_uses_unique_high_support_parent(self):
+        aliases = _observed_cb_aliases(
+            [("AACG", 100), ("AATG", 3), ("AANG", 2), ("TTCG", 100), ("NNNG", 1)],
+            min_parent_reads=5, parent_child_ratio=10,
+        )
+        self.assertEqual(aliases, [
+            ("AATG", "AACG", 3, 100, "hamming_1"),
+            ("AANG", "AACG", 2, 100, "n_wildcard"),
+        ])
+
+    def test_pb_cb_config_requires_raw_cb_without_whitelist(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config_path = root / "config.yaml"
+            config_path.write_text("""
+project:
+  workdir: .
+samples:
+  - sample: sample
+    r1: r1.fq.gz
+    r2: r2.fq.gz
+library:
+  type: pb-cb
+barcode1:
+  name: PB
+  segments:
+    - segment: PB
+      read: R1
+      method: fixed
+      start: 0
+      length: 4
+      correction:
+        enabled: false
+barcode2:
+  name: CB
+  sequence_only: true
+  segments:
+    - segment: CB
+      read: R2
+      method: fixed
+      start: 0
+      length: 4
+      correction:
+        enabled: false
+umi:
+  name: UMI
+  segments:
+    - segment: UMI
+      read: R2
+      method: fixed
+      start: 4
+      length: 4
+""", encoding="utf-8")
+            config = load_config(config_path, check_files=False)
+            self.assertTrue(config.pb_cb_enabled)
+            self.assertEqual(config.pb_cb_dominance_threshold, 0.8)
+            config_path.write_text(config_path.read_text(encoding="utf-8").replace(
+                "enabled: false\nbarcode2:", "enabled: false\nbarcode2:", 1
+            ).replace(
+                "correction:\n        enabled: false\numi:",
+                "whitelist: cb.txt\n      correction:\n        enabled: false\numi:",
+            ), encoding="utf-8")
+            with self.assertRaisesRegex(ConfigError, "must not set a barcode2 whitelist"):
+                load_config(config_path, check_files=False)
+
     def test_quick_test_takes_only_leading_records(self):
         selected, scanned = _take_leading_records(iter(range(1000)), 10)
         self.assertEqual(scanned, 10)

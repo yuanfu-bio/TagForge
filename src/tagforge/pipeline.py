@@ -11,13 +11,13 @@ from .extract import extract_sample
 from .external_tools import check_external_tools
 from .io_utils import sample_dirs, step_complete, touch_checkpoint
 from .logging_utils import sample_logger
-from .matrix import matrix_sample
+from .matrix import matrix_sample, pair_mapping_sample
 from .reports import batch_report, report_sample, write_summary
 from .umi_correct import dedup_sample
 
 
 STEP_FUNCS = {"extract": extract_sample, "correct": correct_sample, "dedup": dedup_sample,
-              "matrix": matrix_sample, "downsample": downsample_sample, "report": report_sample}
+              "matrix": matrix_sample, "pair-map": pair_mapping_sample, "downsample": downsample_sample, "report": report_sample}
 
 
 def expected_outputs(config: TagForgeConfig, sample: str, step: str):
@@ -31,6 +31,12 @@ def expected_outputs(config: TagForgeConfig, sample: str, step: str):
         "dedup": [d["detail"] / f"{sample}.molecule_detail.tsv.gz"] + (
             [d["detail"] / f"{sample}.molecule_detail.rmMP.tsv.gz", d["detail"] / f"{sample}.pi_seq_qc.tsv"] if config.pi_seq_enabled else []),
         "matrix": [d["matrix"] / f"{sample}.raw_count_matrix.tsv.gz"],
+        "pair-map": [d["matrix"] / f"{sample}.pb_cb_mapping.tsv.gz"] + (
+            [d["matrix"] / f"{sample}.pb_cb_map.tsv.gz",
+             d["matrix"] / f"{sample}.cb_pb_counts.tsv.gz",
+             d["matrix"] / f"{sample}.cb_pb_count_distribution.tsv",
+             d["matrix"] / f"{sample}.cb_observed_correction.tsv.gz"]
+            if getattr(config, "pb_cb_enabled", False) else []),
         "downsample": [
             d["downsample"] / f"{sample}.downsample_metrics.tsv",
             d["downsample"] / f"{sample}.optimal_saturation_point.tsv",
@@ -176,10 +182,13 @@ def run_pipeline(config: TagForgeConfig, sample_names, overwrite: bool = False):
             "dependencies\tcutadapt=%s\tumi_tools=%s\telapsed_time=0",
             versions.cutadapt, versions.umi_tools,
         )
-        for step in ("extract", "correct", "dedup", "matrix", "downsample", "report"):
+        steps = ("extract", "correct", "dedup", "pair-map") if getattr(config, "pb_cb_enabled", False) else (
+            "extract", "correct", "dedup", "matrix", "downsample", "report")
+        for step in steps:
             run_step(config, sample, step, overwrite)
             # Array tasks publish completed samples immediately; the writer
             # rescans all configured checkpoints under an interprocess lock.
             if step == "downsample":
                 write_summary(config)
-    batch_report(config, sample_names)
+    if not getattr(config, "pb_cb_enabled", False):
+        batch_report(config, sample_names)

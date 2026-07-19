@@ -154,7 +154,7 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
             barcode1 = "".join(corrected_by_target["barcode1"])
             barcode2 = "".join(corrected_by_target["barcode2"])
             umi = "".join(raw_by_target["umi"].get(s.name, "") for s in config.segments if s.target == "umi")
-            feature = annotation.get(barcode2, "")
+            feature = barcode2 if getattr(config, "barcode2_sequence_only", False) else annotation.get(barcode2, "")
             valid = bool(barcode1 and feature and umi and "N" not in umi)
             totals["combined_valid"] += int(valid)
             if valid:

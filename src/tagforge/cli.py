@@ -126,7 +126,7 @@ def parser():
         "--skip-quick-test", "--no-quick-test", action="store_true",
         help="Skip the default small-subset QC before the formal pipeline",
     )
-    for step in ("extract", "correct", "dedup", "matrix", "downsample", "report"):
+    for step in ("extract", "correct", "dedup", "matrix", "pair-map", "downsample", "report"):
         p = commands.add_parser(step, help=f"Run the {step} step"); _common(p)
     summary = commands.add_parser("summary", help="Rebuild the multi-sample summary from completed samples")
     summary.add_argument("--config", required=True, help="YAML configuration file")
