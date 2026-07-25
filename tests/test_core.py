@@ -16,6 +16,7 @@ from tagforge.extract import decode_method_payload, decode_segment_payload, extr
 from tagforge.fastq import _physical_position, open_text, paired_fastq, paired_fastq_batches
 from tagforge.io_utils import sample_dirs, touch_checkpoint
 from tagforge.matrix import _observed_cb_aliases, pair_mapping_sample
+from tagforge.pi_seq import filter_pi_seq_molecules
 from tagforge.reports import write_summary
 from tagforge.slurm import make_slurm
 from tagforge.quick_test import _take_leading_records
@@ -35,6 +36,25 @@ class CoreTests(unittest.TestCase):
                 allow_duplicate_names=False,
             )
             self.assertEqual(load_fb_annotation(config), {"AAAC": "AAAC", "CCGG": "CCGG"})
+
+    def test_pi_seq_qc_reports_mp_and_removed_ratios_separately(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = SimpleNamespace(
+                output_dir=root, compression_level=3, pi_seq_dominance_threshold=0.8,
+                target_name=lambda role: {"barcode1": "PB", "barcode2": "FB"}[role],
+            )
+            dirs = sample_dirs(root, "sample")
+            source = dirs["detail"] / "sample.molecule_detail.tsv.gz"
+            with gzip.open(source, "wt", encoding="utf-8") as handle:
+                handle.write("PB\tFB_name\tcorrected_umi\treads_count\traw_umi_count\n")
+                handle.write("PB1\tF1\tU1\t10\t1\n")
+                handle.write("PB1\tF1\tU2\t9\t1\nPB2\tF1\tU2\t1\t1\n")
+                handle.write("PB1\tF1\tU3\t5\t1\nPB2\tF1\tU3\t5\t1\n")
+            qc = filter_pi_seq_molecules(config, "sample", source)
+            self.assertEqual(qc["mp_ratio"], "0.666667")
+            self.assertEqual(qc["dominant_ratio"], "0.500000")
+            self.assertEqual(qc["removed_ratio"], "0.333333")
 
     def test_pair_mapping_aggregates_molecules_and_reads(self):
         with tempfile.TemporaryDirectory() as td:

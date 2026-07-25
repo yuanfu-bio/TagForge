@@ -81,10 +81,11 @@ def filter_pi_seq_molecules(config, sample_name: str, source: Path):
             "sample": sample_name, "total_molecules": total_molecules, "total_fb_umis": total_fb_umis,
             "multi_pi_fb_umis": multi_pi_fb_umis,
             "multi_pi_ratio": f"{multi_pi_fb_umis / total_fb_umis:.6f}" if total_fb_umis else "0.000000",
+            "mp_ratio": f"{multi_pi_fb_umis / total_fb_umis:.6f}" if total_fb_umis else "0.000000",
             "dominant_multi_pi_fb_umis": dominant_multi_pi_fb_umis,
             "dominant_ratio": f"{dominant_multi_pi_fb_umis / multi_pi_fb_umis:.6f}" if multi_pi_fb_umis else "0.000000",
             "retained_molecules": retained_molecules, "removed_fb_umis": removed_fb_umis,
-            "mp_ratio": f"{removed_fb_umis / total_fb_umis:.6f}" if total_fb_umis else "0.000000",
+            "removed_ratio": f"{removed_fb_umis / total_fb_umis:.6f}" if total_fb_umis else "0.000000",
             "dominance_threshold": config.pi_seq_dominance_threshold,
         }
         write_tsv(qc_path, list(row), [row])
