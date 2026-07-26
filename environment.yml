@@ -8,6 +8,8 @@ dependencies:
   - umi_tools>=1.1.5
   - coreutils
   - pyyaml>=6
+  - duckdb>=1.1
+  - pyarrow>=16
   - pip
   - setuptools>=68
   - wheel

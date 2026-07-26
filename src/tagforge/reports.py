@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from .barcode_correct import load_fb_annotation, load_whitelist_names
+from .columnar import open_records
 from .config import TagForgeConfig
 from .io_utils import atomic_text, open_tsv, sample_dirs, step_complete, write_tsv
 from .xlsx import write_xlsx
@@ -23,6 +24,9 @@ def _rows(path: Path):
 
 
 def _matrix_summary(path: Path):
+    if not path.is_file():
+        from .sparse_matrix import load_summary
+        return load_summary(path.with_name(path.name.replace(".raw_count_matrix.tsv.gz", ".raw_matrix_summary.json")))[:2]
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         reader = csv.reader(handle, delimiter="\t"); header = next(reader, [])
         b1 = 0; totals = Counter()
@@ -34,6 +38,9 @@ def _matrix_summary(path: Path):
 
 def _pi_seq_pb_summary(path: Path):
     """Stream PB statistics, retaining only the two Top-20 views."""
+    if not path.is_file():
+        from .sparse_matrix import load_summary
+        return load_summary(path.with_name(path.name.replace(".raw_count_matrix.tsv.gz", ".raw_matrix_summary.json")))[2]
     import heapq
     molecule_heap = []; protein_heap = []; molecule_bins = [0] * 8; protein_bins = [0] * 8; total = 0
     with gzip.open(path, "rt", encoding="utf-8") as handle:
@@ -112,7 +119,9 @@ def report_sample(config: TagForgeConfig, sample_name: str):
     dirs = sample_dirs(config.output_dir, sample_name)
     extraction_stats = dirs["extracted"] / f"{sample_name}.extraction_stats.tsv"
     stats = dirs["corrected"] / f"{sample_name}.barcode_correction_stats.tsv"
-    molecules = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
+    molecules = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.parquet" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.parquet")
+    if not molecules.exists():
+        molecules = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
     metrics = dirs["downsample"] / f"{sample_name}.downsample_metrics.tsv"
     point = dirs["downsample"] / f"{sample_name}.optimal_saturation_point.tsv"
     matrix = dirs["matrix"] / f"{sample_name}.raw_count_matrix.tsv.gz"
@@ -126,8 +135,8 @@ def report_sample(config: TagForgeConfig, sample_name: str):
         molecule_count = int(pi_qc.get("retained_molecules", 0) or 0)
         read_count = int((point_records[0] if point_records else {}).get("reads_sampled", 0) or 0)
     else:
-        molecule_count = sum(1 for _ in open_tsv(molecules))
-        read_count = sum(int(r["reads_count"]) for r in open_tsv(molecules))
+        molecule_count = sum(1 for _ in open_records(molecules))
+        read_count = sum(int(r["reads_count"]) for r in open_records(molecules))
     combined = next((r for r in stat_records if r["scope"] == "combined"), {})
     barcode2_segments = [s for s in config.segments if s.target == "barcode2"]
     annotated_rate, missing_annotation_details = _annotation_rate_and_details(
@@ -227,10 +236,10 @@ def batch_report(config, sample_names):
         b1_count, feats=_matrix_summary(matrix_path); bulk[sample]=feats
         if config.pi_seq_enabled:
             pb_records = _pi_seq_pb_summary(matrix_path)
-            total_pbs = len(pb_records) or 1
+            total_pbs = pb_records["total"] or 1
             pi_pb_distributions[sample] = {
-                field: [sum(min(row[field], 8) == bucket for row in pb_records) / total_pbs * 100 for bucket in range(1, 9)]
-                for field in ('Molecules', 'Proteins')
+                "Molecules": [count / total_pbs * 100 for count in pb_records["molecule_bins"]],
+                "Proteins": [count / total_pbs * 100 for count in pb_records["protein_bins"]],
             }
         metrics=list(open_tsv(dirs['downsample']/f'{sample}.downsample_metrics.tsv')); downsample_curves[sample]={'x':[float(r['downsample_ratio']) for r in metrics],'saturation':[float(r['sequencing_saturation']) for r in metrics],'duplication':[float(r['duplication_ratio']) for r in metrics],'umi_types':[float(r['umi_types']) for r in metrics],'singletons':[float(r['umi_detected_once']) for r in metrics]}
         optimal=next(open_tsv(dirs['downsample']/f'{sample}.optimal_saturation_point.tsv'), {})
@@ -290,7 +299,7 @@ def _summary_inputs(config: TagForgeConfig, sample: str):
     root = config.output_dir / sample
     return root / "01_checkpoint" / "downsample.done", [
         root / "03_corrected" / f"{sample}.barcode_correction_stats.tsv",
-        root / "05_detail" / f"{sample}.optimal_saturation_molecule_detail.tsv.gz",
+        root / "04_matrix" / f"{sample}.raw_matrix_summary.json",
         root / "06_downsample" / f"{sample}.optimal_saturation_point.tsv",
     ]
 
@@ -307,7 +316,9 @@ def _barcode2_annotation_gap(config, sample, stats, barcode2_segments):
         return valid_reads, 0, []
     root = config.output_dir / sample
     corrected = root / "03_corrected"
-    trace = corrected / f"{sample}.barcode_correction_trace.tsv.gz"
+    trace = corrected / f"{sample}.barcode_correction_trace.parquet"
+    if not trace.is_file():
+        trace = corrected / f"{sample}.barcode_correction_trace.tsv.gz"
     qc_path = corrected / f"{sample}.barcode2_annotation_qc.tsv"
     detail_path = corrected / f"{sample}.barcode2_not_in_annotation.tsv.gz"
     annotation_path = getattr(config, "fb_info", None)
@@ -344,21 +355,13 @@ def _barcode2_annotation_gap(config, sample, stats, barcode2_segments):
         if sequence not in annotation:
             counts[sequence] += 1
 
-    with gzip.open(trace, "rt", encoding="utf-8", newline="") as handle:
-        reader = csv.reader(handle, delimiter="\t")
-        header = next(reader)
-        columns = {name: index for index, name in enumerate(header)}
-        read_id_index = columns["read_id"]
-        segment_index = columns["segment_name"]
-        hit_index = columns["whitelist_hit"]
-        sequence_index = columns["corrected_sequence"]
-        for row in reader:
-            read_id = row[read_id_index]
-            if current_id is not None and read_id != current_id:
-                consume(current); current = {}
-            current_id = read_id
-            if row[segment_index] in segment_names and row[hit_index] == "true":
-                current[row[segment_index]] = row[sequence_index]
+    for row in open_records(trace):
+        read_id = row["read_id"]
+        if current_id is not None and read_id != current_id:
+            consume(current); current = {}
+        current_id = read_id
+        if row["segment_name"] in segment_names and row["whitelist_hit"] == "true":
+            current[row["segment_name"]] = row["corrected_sequence"]
     if current_id is not None:
         consume(current)
     details = [
@@ -438,14 +441,12 @@ def write_summary(config: TagForgeConfig):
                 [barcode2_names.get(row["barcode2_sequence"], row["barcode2_sequence"]), row["reads_count"]]
                 for row in missing_details[:50]
             ]))
-            # The optimal count matrix is the aggregation of the requested
-            # molecule detail, and is substantially smaller to read.
-            optimal_matrix = root / "04_matrix" / f"{sample}.optimal_saturation_count_matrix.tsv.gz"
-            counts = (
-                _matrix_summary(optimal_matrix)[1] if optimal_matrix.is_file() else
-                Counter(row[feature_column] for row in open_tsv(
-                    root / "05_detail" / f"{sample}.optimal_saturation_molecule_detail.tsv.gz"))
-            )
+            from .sparse_matrix import load_summary, summary_path
+            matrix_dir = root / "04_matrix"
+            selected_summary = summary_path(matrix_dir, sample, "optimal")
+            if not selected_summary.is_file():
+                selected_summary = summary_path(matrix_dir, sample)
+            counts = load_summary(selected_summary)[1]
             feature_counts[sample] = counts
             all_features.update(counts)
             publish()

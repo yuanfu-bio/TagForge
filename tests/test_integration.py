@@ -14,7 +14,7 @@ from tagforge.config import load_config
 from tagforge.barcode_correct import correct_sample
 from tagforge.extract import extract_sample
 from tagforge.fastq import paired_fastq_batches
-from tagforge.io_utils import tsv_batches
+from tagforge.columnar import open_records, record_batches
 
 
 class IntegrationTests(unittest.TestCase):
@@ -43,7 +43,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("quick-test: sampled=9 reads, scanned=9", result.stdout)
         sample = root / "02_output/example"
-        self.assertTrue((sample / "04_matrix/example.raw_count_matrix.tsv.gz").is_file())
+        self.assertTrue((sample / "04_matrix/example.raw_molecule_pairs.parquet").is_file())
+        self.assertTrue((sample / "04_matrix/example.raw_matrix_summary.json").is_file())
         self.assertTrue((sample / "07_report/example.report.xlsx").is_file())
         self.assertTrue((sample / "02_extracted/example.extraction_stats.tsv").is_file())
         quick_stats = sample / "07_report/example.quick_test.tsv"
@@ -60,9 +61,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("dedup_summary", log)
         self.assertIn("dedup_progress", log)
         self.assertIn("workers=2", log)
-        with gzip.open(sample / "02_extracted/example.extracted.tsv.gz", "rt", encoding="utf-8") as handle:
-            extracted = handle.read()
-        header = extracted.splitlines()[0]
+        extracted_rows = list(open_records(sample / "02_extracted/example.extracted.parquet"))
+        extracted = "\n".join("\t".join(row.values()) for row in extracted_rows)
+        header = "\t".join(extracted_rows[0])
         self.assertEqual(
             header,
             "read_id\tCELL_segments\tFB_segments\tUMI_segments\tmethods\tstatus\tfailure_reason",
@@ -86,15 +87,11 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue((sample / "06_downsample/example.downsample.html").is_file())
         stats = (sample / "02_extracted/example.extraction_stats.tsv").read_text(encoding="utf-8")
         self.assertIn("CELL\tCELL\tR1\tlinker_fixed\t9\t9\t8\t1", stats)
-        with gzip.open(sample / "05_detail/example.valid_reads.tsv.gz", "rt", encoding="utf-8") as handle:
-            valid_header = handle.readline().strip()
-        self.assertEqual(valid_header, "read_id\tCELL\tFB_sequence\tFB_name\tUMI\tcorrection_summary")
-        with gzip.open(sample / "05_detail/example.molecule_detail.tsv.gz", "rt", encoding="utf-8") as handle:
-            molecule_header = handle.readline().strip()
-        self.assertEqual(molecule_header, "CELL\tFB_name\tcorrected_umi\treads_count\traw_umi_count")
-        with gzip.open(sample / "04_matrix/example.raw_count_matrix.tsv.gz", "rt", encoding="utf-8") as handle:
-            matrix_header = handle.readline().strip()
-        self.assertTrue(matrix_header.startswith("CELL\t"))
+        valid_rows = list(open_records(sample / "05_detail/example.valid_reads.parquet"))
+        self.assertEqual(list(valid_rows[0]), ["read_id", "CELL", "FB_sequence", "FB_name", "UMI", "correction_summary"])
+        molecule_rows = list(open_records(sample / "05_detail/example.molecule_detail.parquet"))
+        self.assertEqual(list(molecule_rows[0]), ["CELL", "FB_name", "corrected_umi", "reads_count", "raw_umi_count"])
+        self.assertFalse((sample / "04_matrix/example.raw_count_matrix.tsv.gz").exists())
 
         # Commit one three-read gzip member, interrupt, then resume without
         # duplicating the header or completed records.
@@ -115,23 +112,21 @@ class IntegrationTests(unittest.TestCase):
             resume_file = config.output_dir / "example/01_checkpoint/example.extract.resume.json"
             self.assertTrue(resume_file.is_file())
             extract_sample(config, "example", resume=True)
-            resumed = config.output_dir / "example/02_extracted/example.extracted.tsv.gz"
-            with gzip.open(resumed, "rt", encoding="utf-8") as handle:
-                resumed_lines = handle.read().splitlines()
-            self.assertEqual(len(resumed_lines), 10)
-            self.assertEqual(sum(line.startswith("read001\t") for line in resumed_lines), 1)
+            resumed_rows = list(open_records(config.output_dir / "example/02_extracted/example.extracted.parquet"))
+            self.assertEqual(len(resumed_rows), 9)
+            self.assertEqual(sum(row["read_id"] == "read001" for row in resumed_rows), 1)
             self.assertFalse(resume_file.exists())
 
-            # Correction commits complete gzip members for both outputs and
-            # restores them, counters, and progress after interruption.
-            real_tsv_batches = tsv_batches
+            # Correction commits complete Parquet fragments for both outputs and
+            # restores counters and output fragment boundaries after interruption.
+            real_record_batches = record_batches
 
             def interrupted_correction_batches(path, batch_size):
-                yield next(iter(real_tsv_batches(path, batch_size)))
+                yield next(iter(real_record_batches(path, batch_size)))
                 raise RuntimeError("simulated correction interruption")
 
             with patch(
-                "tagforge.barcode_correct.tsv_batches",
+                "tagforge.barcode_correct.record_batches",
                 side_effect=interrupted_correction_batches,
             ):
                 with self.assertRaisesRegex(RuntimeError, "simulated correction interruption"):
@@ -140,30 +135,12 @@ class IntegrationTests(unittest.TestCase):
                 config.output_dir / "example/01_checkpoint/example.correct.resume.json"
             )
             self.assertTrue(correction_resume.is_file())
-            valid_tmp = config.output_dir / "example/05_detail/example.valid_reads.tsv.gz.tmp"
-            trace_tmp = (
-                config.output_dir
-                / "example/03_corrected/example.barcode_correction_trace.tsv.gz.tmp"
-            )
-            with open(valid_tmp, "ab") as handle:
-                handle.write(b"uncommitted-tail")
-            with open(trace_tmp, "ab") as handle:
-                handle.write(b"uncommitted-tail")
             correct_sample(config, "example", resume=True)
-            with gzip.open(
-                config.output_dir / "example/05_detail/example.valid_reads.tsv.gz",
-                "rt", encoding="utf-8",
-            ) as handle:
-                valid_lines = handle.read().splitlines()
-            self.assertEqual(len(valid_lines), 10)
-            self.assertEqual(sum(line.startswith("read001\t") for line in valid_lines), 1)
-            with gzip.open(
-                config.output_dir
-                / "example/03_corrected/example.barcode_correction_trace.tsv.gz",
-                "rt", encoding="utf-8",
-            ) as handle:
-                trace_lines = handle.read().splitlines()
-            self.assertEqual(len(trace_lines), 19)
+            valid_rows = list(open_records(config.output_dir / "example/05_detail/example.valid_reads.parquet"))
+            self.assertEqual(len(valid_rows), 9)
+            self.assertEqual(sum(row["read_id"] == "read001" for row in valid_rows), 1)
+            trace_rows = list(open_records(config.output_dir / "example/03_corrected/example.barcode_correction_trace.parquet"))
+            self.assertEqual(len(trace_rows), 18)
             self.assertFalse(correction_resume.exists())
             correction_progress = (
                 config.output_dir / "example/00_logs/example.correction_progress.tsv"

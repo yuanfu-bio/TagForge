@@ -9,10 +9,11 @@ from .config import TagForgeConfig
 from .downsample import downsample_sample
 from .extract import extract_sample
 from .external_tools import check_external_tools
-from .io_utils import sample_dirs, step_complete, touch_checkpoint
+from .io_utils import output_ready, sample_dirs, step_complete, touch_checkpoint
 from .logging_utils import sample_logger
 from .matrix import matrix_sample, pair_mapping_sample
 from .reports import batch_report, report_sample, write_summary
+from .sparse_matrix import pair_path, summary_path
 from .umi_correct import dedup_sample
 
 
@@ -24,13 +25,13 @@ def expected_outputs(config: TagForgeConfig, sample: str, step: str):
     d = sample_dirs(config.output_dir, sample)
     return {
         "extract": [
-            d["extracted"] / f"{sample}.extracted.tsv.gz",
+            d["extracted"] / f"{sample}.extracted.parquet",
             d["extracted"] / f"{sample}.extraction_stats.tsv",
         ],
-        "correct": [d["detail"] / f"{sample}.valid_reads.tsv.gz", d["corrected"] / f"{sample}.barcode_correction_stats.tsv"] + ([d["corrected"] / f"{sample}.barcode_correction_trace.tsv.gz"] if config.trace_enabled else []),
-        "dedup": [d["detail"] / f"{sample}.molecule_detail.tsv.gz"] + (
-            [d["detail"] / f"{sample}.molecule_detail.rmMP.tsv.gz", d["detail"] / f"{sample}.pi_seq_qc.tsv"] if config.pi_seq_enabled else []),
-        "matrix": [d["matrix"] / f"{sample}.raw_count_matrix.tsv.gz"],
+        "correct": [d["detail"] / f"{sample}.valid_reads.parquet", d["corrected"] / f"{sample}.barcode_correction_stats.tsv"] + ([d["corrected"] / f"{sample}.barcode_correction_trace.parquet"] if config.trace_enabled else []),
+        "dedup": [d["detail"] / f"{sample}.molecule_detail.parquet"] + (
+            [d["detail"] / f"{sample}.molecule_detail.rmMP.parquet", d["detail"] / f"{sample}.pi_seq_qc.tsv"] if config.pi_seq_enabled else []),
+        "matrix": [pair_path(d["matrix"], sample), summary_path(d["matrix"], sample)],
         "pair-map": [d["matrix"] / f"{sample}.pb_cb_mapping.tsv.gz"] + (
             [d["matrix"] / f"{sample}.pb_cb_map.tsv.gz",
              d["matrix"] / f"{sample}.cb_pb_counts.tsv.gz",
@@ -41,8 +42,6 @@ def expected_outputs(config: TagForgeConfig, sample: str, step: str):
             d["downsample"] / f"{sample}.downsample_metrics.tsv",
             d["downsample"] / f"{sample}.optimal_saturation_point.tsv",
             d["downsample"] / f"{sample}.downsample.html",
-            d["detail"] / f"{sample}.optimal_saturation_molecule_detail.tsv.gz",
-            d["matrix"] / f"{sample}.optimal_saturation_count_matrix.tsv.gz",
         ],
         "report": [d["report"] / f"{sample}.report.xlsx", d["report"] / f"{sample}.report.html"],
     }[step]
@@ -163,7 +162,7 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
                 summary.get("sqlite_cache_mb", "NA"), summary["aggregation_seconds"],
                 summary["clustering_seconds"], summary["wall_seconds"], time.monotonic() - start,
             )
-        if not all(path.is_file() and path.stat().st_size > 0 for path in outputs):
+        if not all(output_ready(path) for path in outputs):
             raise RuntimeError(f"Step {step} did not create all expected outputs")
         touch_checkpoint(checkpoint, __version__)
         logger.info("%s\tfinish\telapsed_time=%.3f", step, time.monotonic() - start)

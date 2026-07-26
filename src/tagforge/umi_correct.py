@@ -12,9 +12,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator
 
+from .columnar import ParquetFragmentWriter, open_records
 from .config import ConfigError, TagForgeConfig
 from .io_utils import atomic_text, open_tsv, sample_dirs, write_tsv
-from .logging_utils import sample_logger
+from .logging_utils import ProgressThrottle, sample_logger
 from .pi_seq import filter_pi_seq_molecules
 
 
@@ -195,7 +196,7 @@ def _external_sort_aggregate(
             process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=sorted_handle, stderr=subprocess.PIPE, text=True)
             assert process.stdin is not None
             try:
-                for row in open_tsv(source):
+                for row in open_records(source):
                     values = (row[barcode1_col], row[barcode2_name_col], row[umi_col])
                     if any("\t" in value or "\n" in value or "\r" in value for value in values):
                         raise ConfigError("PB, FB name, and UMI values must not contain tabs or newlines for external_sort aggregation")
@@ -269,8 +270,9 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
     """Deduplicate after GNU sort has made each PB-FB UMI scope contiguous."""
     dirs = sample_dirs(config.output_dir, sample_name)
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
-    source = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"
-    output = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
+    source = dirs["detail"] / f"{sample_name}.valid_reads.parquet"
+    if not source.exists(): source = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"
+    parquet_output = dirs["detail"] / f"{sample_name}.molecule_detail.parquet"
     progress_path = dirs["logs"] / f"{sample_name}.dedup_progress.tsv"
     started = time.monotonic()
     aggregation_workers = config.umi_aggregation_workers or min(config.threads, 4)
@@ -282,13 +284,15 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
     executor = None
     sort_dir = Path(tempfile.mkdtemp(prefix=f"{sample_name}.umi-sort.", dir=dirs["tmp"]))
     fields = molecule_fields(config)
+    progress_throttle = ProgressThrottle()
     progress_fields = ["status", "valid_reads", "groups", "total_groups", "raw_umis", "total_raw_umis", "molecules", "batches_submitted", "batches_completed", "requested_workers", "workers", "aggregation_workers", "aggregation_records", "elapsed_seconds"]
 
     def progress(status: str):
         elapsed = time.monotonic() - started
         row = {"status": status, "valid_reads": reads, "groups": total_groups, "total_groups": total_groups, "components": groups_processed, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "molecules": molecules, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "requested_workers": requested_workers, "workers": workers, "aggregation_workers": aggregation_workers, "aggregation_records": total_raw_umis, "elapsed_seconds": f"{elapsed:.2f}"}
-        write_tsv(progress_path, progress_fields, [row])
-        logger.info("dedup_progress\tstatus=%s\tvalid_reads=%s\tgroups=%s\ttotal_groups=%s\traw_umis=%s\ttotal_raw_umis=%s\tmolecules=%s\tbatches_completed=%s\taggregation_records=%s\telapsed_seconds=%s", status, reads, groups_processed, total_groups, raw_umis_processed, total_raw_umis, molecules, batches_completed, total_raw_umis, row["elapsed_seconds"])
+        if progress_throttle.allow(status):
+            write_tsv(progress_path, progress_fields, [row])
+            logger.info("dedup_progress\tstatus=%s\tvalid_reads=%s\tgroups=%s\ttotal_groups=%s\traw_umis=%s\ttotal_raw_umis=%s\tmolecules=%s\tbatches_completed=%s\taggregation_records=%s\telapsed_seconds=%s", status, reads, groups_processed, total_groups, raw_umis_processed, total_raw_umis, molecules, batches_completed, total_raw_umis, row["elapsed_seconds"])
 
     def aggregation_progress(status: str, input_reads: int, raw_umis: int, groups: int):
         nonlocal reads, total_raw_umis, total_groups
@@ -316,31 +320,31 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
         group_batches = _group_batches(
             _aggregated_tsv_cursor(aggregated_path), config.umi_batch_size, config.umi_max_distance,
         )
-        with atomic_text(output, config.compression_level) as handle:
-            writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
-            writer.writerow(fields)
-            def consume(result):
-                nonlocal molecules, groups_processed, raw_umis_processed, batches_completed
-                rows, group_count, _batch_reads, raw_umi_count = result
-                writer.writerows(rows); molecules += len(rows); groups_processed += group_count; raw_umis_processed += raw_umi_count; batches_completed += 1; progress("running")
-            if workers == 1:
+        output_writer = ParquetFragmentWriter(parquet_output, fields, config.chunk_size)
+        def consume(result):
+            nonlocal molecules, groups_processed, raw_umis_processed, batches_completed
+            rows, group_count, _batch_reads, raw_umi_count = result
+            output_writer.writerows(dict(zip(fields, row)) for row in rows)
+            molecules += len(rows); groups_processed += group_count; raw_umis_processed += raw_umi_count; batches_completed += 1; progress("running")
+        if workers == 1:
+            for group_batch in group_batches:
+                peak_batch_umis = max(peak_batch_umis, sum(len(group) for _, group in group_batch)); batches_submitted += 1
+                consume(_dedup_batch(group_batch, config.umi_method, config.umi_max_distance))
+        else:
+            pending = deque()
+            with executor:
                 for group_batch in group_batches:
                     peak_batch_umis = max(peak_batch_umis, sum(len(group) for _, group in group_batch)); batches_submitted += 1
-                    consume(_dedup_batch(group_batch, config.umi_method, config.umi_max_distance))
-            else:
-                pending = deque()
-                with executor:
-                    for group_batch in group_batches:
-                        peak_batch_umis = max(peak_batch_umis, sum(len(group) for _, group in group_batch)); batches_submitted += 1
-                        pending.append(executor.submit(_dedup_batch, group_batch, config.umi_method, config.umi_max_distance))
-                        if len(pending) >= workers: consume(pending.popleft().result())
-                    while pending: consume(pending.popleft().result())
+                    pending.append(executor.submit(_dedup_batch, group_batch, config.umi_method, config.umi_max_distance))
+                    if len(pending) >= workers: consume(pending.popleft().result())
+                while pending: consume(pending.popleft().result())
+        output_writer.close()
         clustering_seconds = time.monotonic() - clustering_started
         progress("completed")
         if config.pi_seq_enabled:
-            pi_stats = filter_pi_seq_molecules(config, sample_name, output)
+            pi_stats = filter_pi_seq_molecules(config, sample_name, parquet_output)
             logger.info("pi_seq_summary\ttotal_fb_umis=%s\tmulti_pi_ratio=%s\tmp_ratio=%s", pi_stats["total_fb_umis"], pi_stats["multi_pi_ratio"], pi_stats["mp_ratio"])
-        return output, {"valid_reads": reads, "molecules": molecules, "duplicates": reads - molecules, "groups": total_groups, "total_groups": total_groups, "components": groups_processed, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "requested_workers": requested_workers, "workers": workers, "requested_aggregation_workers": aggregation_workers, "aggregation_workers": aggregation_workers, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "umi_batch_size": config.umi_batch_size, "peak_batch_umis": peak_batch_umis, "aggregation_backend": "external_sort", "sort_memory_mb": config.umi_sort_memory_mb, "aggregation_seconds": aggregation_seconds, "clustering_seconds": clustering_seconds, "wall_seconds": time.monotonic() - started}
+        return parquet_output, {"valid_reads": reads, "molecules": molecules, "duplicates": reads - molecules, "groups": total_groups, "total_groups": total_groups, "components": groups_processed, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "requested_workers": requested_workers, "workers": workers, "requested_aggregation_workers": aggregation_workers, "aggregation_workers": aggregation_workers, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "umi_batch_size": config.umi_batch_size, "peak_batch_umis": peak_batch_umis, "aggregation_backend": "external_sort", "sort_memory_mb": config.umi_sort_memory_mb, "aggregation_seconds": aggregation_seconds, "clustering_seconds": clustering_seconds, "wall_seconds": time.monotonic() - started}
     finally:
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
@@ -351,8 +355,9 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         return _dedup_sample_external_sort(config, sample_name)
     dirs = sample_dirs(config.output_dir, sample_name)
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
-    source = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"
-    output = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
+    source = dirs["detail"] / f"{sample_name}.valid_reads.parquet"
+    if not source.exists(): source = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"
+    parquet_output = dirs["detail"] / f"{sample_name}.molecule_detail.parquet"
     progress_path = dirs["logs"] / f"{sample_name}.dedup_progress.tsv"
     db_path = dirs["tmp"] / f"{sample_name}.umi_counts.sqlite3"
     db_path.unlink(missing_ok=True)
@@ -386,6 +391,7 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         "elapsed_seconds", "valid_reads_per_second", "groups_per_second",
         "eta_seconds", "estimated_finish",
     ]
+    progress_throttle = ProgressThrottle()
 
     def record_progress(status: str, pending_batches: int = 0):
         now = time.monotonic()
@@ -420,6 +426,8 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
             "eta_seconds": f"{eta:.2f}" if eta else "",
             "estimated_finish": finish,
         }
+        if not progress_throttle.allow(status):
+            return
         write_tsv(progress_path, progress_fields, [row])
         logger.info(
             "dedup_progress\tstatus=%s\tvalid_reads=%s\tgroups=%s\t"
@@ -486,7 +494,7 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
 
         batch = []
         pending_aggregation = set()
-        for row in open_tsv(source):
+        for row in open_records(source):
             batch.append((row[barcode1_col], row[barcode2_name_col], row[umi_col]))
             reads += 1
             if len(batch) >= config.chunk_size:
@@ -552,41 +560,40 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         )
         record_progress("aggregated", 0)
 
-        with atomic_text(output, config.compression_level) as handle:
-            writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
-            writer.writerow(fields)
+        output_writer = ParquetFragmentWriter(parquet_output, fields, config.chunk_size)
 
-            def consume(result, pending_batches: int = 0):
-                nonlocal molecules, groups_processed, raw_umis_processed, batches_completed
-                rows, group_count, _batch_reads, raw_umi_count = result
-                writer.writerows(rows)
-                molecules += len(rows)
-                groups_processed += group_count
-                raw_umis_processed += raw_umi_count
-                batches_completed += 1
-                record_progress("running", pending_batches)
+        def consume(result, pending_batches: int = 0):
+            nonlocal molecules, groups_processed, raw_umis_processed, batches_completed
+            rows, group_count, _batch_reads, raw_umi_count = result
+            output_writer.writerows(dict(zip(fields, row)) for row in rows)
+            molecules += len(rows)
+            groups_processed += group_count
+            raw_umis_processed += raw_umi_count
+            batches_completed += 1
+            record_progress("running", pending_batches)
 
-            if workers == 1:
+        if workers == 1:
+            for group_batch in group_batches:
+                peak_batch_umis = max(peak_batch_umis, sum(len(group) for _, group in group_batch))
+                batches_submitted += 1
+                consume(_dedup_batch(group_batch, config.umi_method, config.umi_max_distance))
+        else:
+            # At most one submitted batch per worker: enough to keep all
+            # CPUs busy without an unbounded multiprocessing task queue.
+            pending = deque()
+            with executor:
                 for group_batch in group_batches:
-                    peak_batch_umis = max(peak_batch_umis, sum(len(group) for _, group in group_batch))
+                    batch_umi_count = sum(len(group) for _, group in group_batch)
+                    peak_batch_umis = max(peak_batch_umis, batch_umi_count)
+                    pending.append(executor.submit(
+                        _dedup_batch, group_batch, config.umi_method, config.umi_max_distance
+                    ))
                     batches_submitted += 1
-                    consume(_dedup_batch(group_batch, config.umi_method, config.umi_max_distance))
-            else:
-                # At most one submitted batch per worker: enough to keep all
-                # CPUs busy without an unbounded multiprocessing task queue.
-                pending = deque()
-                with executor:
-                    for group_batch in group_batches:
-                        batch_umi_count = sum(len(group) for _, group in group_batch)
-                        peak_batch_umis = max(peak_batch_umis, batch_umi_count)
-                        pending.append(executor.submit(
-                            _dedup_batch, group_batch, config.umi_method, config.umi_max_distance
-                        ))
-                        batches_submitted += 1
-                        if len(pending) >= workers:
-                            consume(pending.popleft().result(), len(pending))
-                    while pending:
+                    if len(pending) >= workers:
                         consume(pending.popleft().result(), len(pending))
+                while pending:
+                    consume(pending.popleft().result(), len(pending))
+        output_writer.close()
         record_progress("completed", 0)
 
         clustering_seconds = time.monotonic() - clustering_started
@@ -603,9 +610,9 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         Path(str(db_path) + "-journal").unlink(missing_ok=True)
     wall_seconds = time.monotonic() - started
     if config.pi_seq_enabled:
-        pi_stats = filter_pi_seq_molecules(config, sample_name, output)
+        pi_stats = filter_pi_seq_molecules(config, sample_name, parquet_output)
         logger.info("pi_seq_summary\ttotal_fb_umis=%s\tmulti_pi_ratio=%s\tmp_ratio=%s", pi_stats["total_fb_umis"], pi_stats["multi_pi_ratio"], pi_stats["mp_ratio"])
-    return output, {
+    return parquet_output, {
         "valid_reads": reads,
         "molecules": molecules,
         "duplicates": reads - molecules,

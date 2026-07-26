@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import tempfile
 import unittest
 import zipfile
@@ -362,10 +363,9 @@ umi:
                 point = base / "06_downsample" / f"{sample}.optimal_saturation_point.tsv"
                 point.parent.mkdir(parents=True)
                 point.write_text("sample\toptimal_downsample_ratio\tmax_sequencing_saturation\treads_sampled\tumi_types\tumi_detected_once\tduplication_ratio\n" + f"{sample}\t0.5\t60\t50\t20\t8\t30\n", encoding="utf-8")
-                detail = base / "05_detail" / f"{sample}.optimal_saturation_molecule_detail.tsv.gz"
-                detail.parent.mkdir(parents=True)
-                with gzip.open(detail, "wt", encoding="utf-8") as handle:
-                    handle.write(f"CELL\tFB_name\tcorrected_umi\treads_count_at_optimal_downsample\nA\t{feature}\tAAAA\t1\n")
+                summary = base / "04_matrix" / f"{sample}.raw_matrix_summary.json"
+                summary.parent.mkdir(parents=True)
+                summary.write_text(json.dumps({"barcode_count": 1, "feature_counts": {feature: 1}, "pi_seq": {}}), encoding="utf-8")
                 checkpoint = base / "01_checkpoint" / "downsample.done"
                 checkpoint.parent.mkdir(parents=True)
                 touch_checkpoint(checkpoint, __version__)

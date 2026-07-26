@@ -5,6 +5,7 @@ import gzip
 import sqlite3
 from pathlib import Path
 
+from .columnar import open_records
 from .config import TagForgeConfig
 from .io_utils import atomic_text, open_tsv, sample_dirs
 
@@ -50,7 +51,7 @@ def matrix_from_molecules(
     try:
         con.execute("CREATE TABLE m (b1 TEXT, b2 TEXT, n INTEGER, PRIMARY KEY(b1,b2)) WITHOUT ROWID")
         batch = []
-        for row in open_tsv(source):
+        for row in open_records(source):
             batch.append((row[barcode_col], row[feature_col], 1))
             if len(batch) >= 100000:
                 con.executemany("INSERT INTO m VALUES(?,?,?) ON CONFLICT DO UPDATE SET n=n+1", batch); con.commit(); batch.clear()
@@ -76,13 +77,15 @@ def matrix_from_molecules(
 
 def matrix_sample(config: TagForgeConfig, sample_name: str):
     dirs = sample_dirs(config.output_dir, sample_name)
-    source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
-    output = dirs["matrix"] / f"{sample_name}.raw_count_matrix.tsv.gz"
-    return output, matrix_from_molecules(
-        source, output, config.compression_level,
+    source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.parquet" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.parquet")
+    if not source.exists():
+        source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
+    from .sparse_matrix import build_sparse_matrix
+    (dirs["matrix"] / f"{sample_name}.raw_count_matrix.tsv.gz").unlink(missing_ok=True)
+    return build_sparse_matrix(
+        source, dirs["matrix"], sample_name,
         barcode_col=config.target_name("barcode1"),
         feature_col=f"{config.target_name('barcode2')}_name",
-        row_header=config.target_name("barcode1"),
     )
 
 
@@ -94,7 +97,9 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
     CB has support strictly greater than the configured dominance threshold.
     """
     dirs = sample_dirs(config.output_dir, sample_name)
-    source = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
+    source = dirs["detail"] / f"{sample_name}.molecule_detail.parquet"
+    if not source.exists():
+        source = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
     output = dirs["matrix"] / f"{sample_name}.pb_cb_mapping.tsv.gz"
     map_output = dirs["matrix"] / f"{sample_name}.pb_cb_map.tsv.gz"
     cb_counts_output = dirs["matrix"] / f"{sample_name}.cb_pb_counts.tsv.gz"
@@ -112,7 +117,7 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
                 "PRIMARY KEY(pb, cb)) WITHOUT ROWID"
             )
             batch = []
-            for row in open_tsv(source):
+            for row in open_records(source):
                 batch.append((row[pb_column], row[cb_column], int(row["reads_count"])))
                 if len(batch) >= 100000:
                     con.executemany(

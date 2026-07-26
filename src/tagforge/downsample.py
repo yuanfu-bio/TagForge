@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections import Counter
 import hashlib
 import html
 import json
@@ -11,7 +12,8 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from .config import TagForgeConfig
-from .io_utils import atomic_text, sample_dirs, tsv_batches, write_tsv
+from .columnar import ParquetFragmentWriter, open_records, record_batches
+from .io_utils import atomic_text, open_tsv, sample_dirs, tsv_batches, write_tsv
 from .logging_utils import sample_logger
 from .matrix import matrix_from_molecules
 
@@ -28,7 +30,7 @@ PROGRESS_FIELDS = [
 
 # Forked workers inherit the molecule counts copy-on-write, avoiding repeated
 # serialization of the complete vector for every ratio/repeat task.
-_WORKER_COUNTS: list[int] | None = None
+_WORKER_COUNTS: list[int] | Counter[int] | None = None
 
 
 def _seed(base: int, sample: str, ratio: float, repeat: int) -> int:
@@ -45,6 +47,13 @@ def _binomial(n: int, probability: float, rng: random.Random) -> int:
 
 
 def calculate_metrics(supports):
+    if isinstance(supports, Counter):
+        reads = sum(int(value) * int(multiplicity) for value, multiplicity in supports.items())
+        molecules = sum(int(multiplicity) for multiplicity in supports.values())
+        singles = int(supports.get(1, 0))
+        duplication = ((reads - molecules) / reads * 100) if reads else 0.0
+        saturation = ((1 - singles / molecules) * 100) if molecules else 0.0
+        return reads, molecules, singles, duplication, saturation
     reads = 0
     molecules = 0
     singles = 0
@@ -86,13 +95,16 @@ def _sample_metrics(counts: list[int], ratio: float, sample_name: str, repeat: i
         return calculate_metrics(counts)
     rng = random.Random(_seed(seed, sample_name, ratio, repeat))
     reads = molecules = singles = 0
-    for count in counts:
-        sampled = _binomial(count, ratio, rng)
-        if sampled <= 0:
-            continue
-        reads += sampled
-        molecules += 1
-        singles += 1 if sampled == 1 else 0
+    iterable = sorted(counts.items()) if isinstance(counts, Counter) else ((count, 1) for count in counts)
+    for count, multiplicity in iterable:
+        value_rng = random.Random(_seed(seed, f"{sample_name}:{count}", ratio, repeat)) if isinstance(counts, Counter) else rng
+        for _ in range(multiplicity):
+            sampled = _binomial(count, ratio, value_rng)
+            if sampled <= 0:
+                continue
+            reads += sampled
+            molecules += 1
+            singles += 1 if sampled == 1 else 0
     duplication = ((reads - molecules) / reads * 100) if reads else 0.0
     saturation = ((1 - singles / molecules) * 100) if molecules else 0.0
     return reads, molecules, singles, duplication, saturation
@@ -150,13 +162,13 @@ Plotly.newPlot('saturation', [
 def downsample_sample(config: TagForgeConfig, sample_name: str):
     dirs = sample_dirs(config.output_dir, sample_name)
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
-    source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
+    source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.parquet" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.parquet")
+    if not source.exists(): source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
     metrics_path = dirs["downsample"] / f"{sample_name}.downsample_metrics.tsv"
     point_path = dirs["downsample"] / f"{sample_name}.optimal_saturation_point.tsv"
     html_path = dirs["downsample"] / f"{sample_name}.downsample.html"
     progress_path = dirs["logs"] / f"{sample_name}.downsample_progress.tsv"
-    optimal_detail = dirs["detail"] / f"{sample_name}.optimal_saturation_molecule_detail.tsv.gz"
-    optimal_matrix = dirs["matrix"] / f"{sample_name}.optimal_saturation_count_matrix.tsv.gz"
+    optimal_parquet = dirs["detail"] / f"{sample_name}.optimal_saturation_molecule_detail.parquet"
     barcode1_col = config.target_name("barcode1")
     barcode2_name_col = f"{config.target_name('barcode2')}_name"
     started = time.monotonic()
@@ -213,17 +225,17 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
             row["eta_seconds"] or "NA", row["estimated_finish"] or "NA",
         )
 
-    records = []
-    counts = []
+    counts = Counter()
+    molecules_loaded = 0
     total_reads = 0
-    for batch, fraction in tsv_batches(source, config.chunk_size):
+    for batch, fraction in record_batches(source, config.chunk_size):
         for row in batch:
             count = int(row["reads_count"])
-            records.append((row[barcode1_col], row[barcode2_name_col], row["corrected_umi"], count))
-            counts.append(count)
+            counts[count] += 1
+            molecules_loaded += 1
             total_reads += count
         record_progress(
-            "loading", molecules_loaded=len(records), total_reads=total_reads,
+            "loading", molecules_loaded=molecules_loaded, total_reads=total_reads,
             input_percent=f"{fraction * 100:.2f}",
         )
 
@@ -234,7 +246,7 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
     logger.info(
         "downsample_start\tmolecules=%s\ttotal_reads=%s\tratios=%s\trepeats=%s\t"
         "sampling_backend=%s",
-        len(records), total_reads, len(ratios), config.downsample_repeats,
+         molecules_loaded, total_reads, len(ratios), config.downsample_repeats,
         "random.binomialvariate" if hasattr(random.Random(), "binomialvariate") else "python-loop",
     )
 
@@ -260,7 +272,7 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
             row = {"sample": sample_name, "downsample_ratio": ratio, "reads_sampled": reads, "umi_types": molecules, "umi_detected_once": singles, "duplication_ratio": f"{duplication:.6f}", "sequencing_saturation": f"{saturation:.6f}", "repeat": repeat}
             metric_rows.append(row)
             ratios_completed += 1
-            record_progress("sampling", molecules_loaded=len(records), total_reads=total_reads, ratios_completed=ratios_completed, total_ratios=total_ratio_jobs, downsample_ratio=ratio, repeat=repeat, reads_sampled=reads, umi_types=molecules, umi_detected_once=singles, duplication_ratio=f"{duplication:.6f}", sequencing_saturation=f"{saturation:.6f}")
+            record_progress("sampling", molecules_loaded=molecules_loaded, total_reads=total_reads, ratios_completed=ratios_completed, total_ratios=total_ratio_jobs, downsample_ratio=ratio, repeat=repeat, reads_sampled=reads, umi_types=molecules, umi_detected_once=singles, duplication_ratio=f"{duplication:.6f}", sequencing_saturation=f"{saturation:.6f}")
     finally:
         if executor:
             executor.shutdown()
@@ -275,21 +287,22 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
                     "umi_types", "umi_detected_once", "duplication_ratio"]
     write_tsv(point_path, point_fields, [point])
     ratio, repeat = float(optimal["downsample_ratio"]), int(optimal["repeat"])
-    optimal_counts = _sample_counts(counts, ratio, sample_name, repeat, config.downsample_seed)
-    with atomic_text(optimal_detail, config.compression_level) as handle:
+    if ratio < 1.0:
+        rngs = {}
         fields = [barcode1_col, barcode2_name_col, "corrected_umi", "reads_count_at_optimal_downsample"]
-        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", lineterminator="\n"); writer.writeheader()
-        for record, count in zip(records, optimal_counts):
+        writer = ParquetFragmentWriter(optimal_parquet, fields, config.chunk_size)
+        for row in open_records(source):
+            original_count = int(row["reads_count"])
+            rng = rngs.setdefault(original_count, random.Random(_seed(config.downsample_seed, f"{sample_name}:{original_count}", ratio, repeat)))
+            count = _binomial(original_count, ratio, rng)
             if count:
-                writer.writerow({barcode1_col: record[0], barcode2_name_col: record[1],
-                                 "corrected_umi": record[2], "reads_count_at_optimal_downsample": count})
-    matrix_from_molecules(
-        optimal_detail, optimal_matrix, config.compression_level,
-        barcode_col=barcode1_col, feature_col=barcode2_name_col,
-        row_header=barcode1_col,
-    )
+                writer.writerow({barcode1_col: row[barcode1_col], barcode2_name_col: row[barcode2_name_col],
+                                 "corrected_umi": row["corrected_umi"], "reads_count_at_optimal_downsample": count})
+        writer.close()
+        from .sparse_matrix import build_sparse_matrix
+        build_sparse_matrix(optimal_parquet, dirs["matrix"], sample_name, barcode1_col, barcode2_name_col, prefix="optimal")
     record_progress(
-        "completed", molecules_loaded=len(records), total_reads=total_reads,
+        "completed", molecules_loaded=molecules_loaded, total_reads=total_reads,
         ratios_completed=ratios_completed, total_ratios=total_ratio_jobs,
         downsample_ratio=ratio, repeat=repeat,
         reads_sampled=optimal["reads_sampled"], umi_types=optimal["umi_types"],
@@ -301,8 +314,8 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
         "downsample_summary\tmolecules=%s\ttotal_reads=%s\tratios=%s\t"
         "ratio_jobs=%s\toptimal_ratio=%s\tmax_sequencing_saturation=%s\t"
         "reads_sampled=%s\telapsed_time=%.3f",
-        len(records), total_reads, len(ratios), total_ratio_jobs,
+         molecules_loaded, total_reads, len(ratios), total_ratio_jobs,
         point["optimal_downsample_ratio"], point["max_sequencing_saturation"],
         point["reads_sampled"], time.monotonic() - started,
     )
-    return [metrics_path, point_path, html_path, optimal_detail, optimal_matrix], optimal
+    return [metrics_path, point_path, html_path], optimal

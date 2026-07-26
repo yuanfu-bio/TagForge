@@ -96,10 +96,17 @@ def touch_checkpoint(path: Path, version: str):
         handle.write(f"tagforge_version={version}\n")
 
 
+def output_ready(path: Path) -> bool:
+    """Accept normal files and nonempty Parquet dataset directories."""
+    return (path.is_file() and path.stat().st_size > 0) or (
+        path.is_dir() and any(path.glob("*.parquet"))
+    )
+
+
 def step_complete(checkpoint: Path, outputs: list[Path], overwrite: bool, version: str) -> bool:
     return (
         not overwrite
         and checkpoint.is_file()
         and checkpoint.read_text(encoding="utf-8").strip() == f"tagforge_version={version}"
-        and all(path.is_file() and path.stat().st_size > 0 for path in outputs)
+        and all(output_ready(path) for path in outputs)
     )

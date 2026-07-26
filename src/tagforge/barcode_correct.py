@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional
 
 from . import __version__
+from .columnar import ParquetFragmentWriter, parquet_path, parquet_size, record_batches
 from .config import CorrectionConfig, SegmentConfig, TagForgeConfig, ConfigError
 from .extract import decode_method_payload, decode_segment_payload, hamming
 from .io_utils import atomic_text, sample_dirs, tsv_batches, write_tsv
@@ -389,16 +390,16 @@ def _correction_stats(config, counters, summary):
 
 def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True):
     dirs = sample_dirs(config.output_dir, sample_name)
-    source = dirs["extracted"] / f"{sample_name}.extracted.tsv.gz"
-    if not source.is_file():
+    source = dirs["extracted"] / f"{sample_name}.extracted.parquet"
+    if not source.exists():
+        source = dirs["extracted"] / f"{sample_name}.extracted.tsv.gz"
+    if not source.exists():
         raise FileNotFoundError(f"Extraction output missing for {sample_name}: {source}")
-    trace_path = dirs["corrected"] / f"{sample_name}.barcode_correction_trace.tsv.gz"
+    trace_parquet = dirs["corrected"] / f"{sample_name}.barcode_correction_trace.parquet"
     stats_path = dirs["corrected"] / f"{sample_name}.barcode_correction_stats.tsv"
-    valid_path = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"
+    valid_parquet = dirs["detail"] / f"{sample_name}.valid_reads.parquet"
     progress_path = dirs["logs"] / f"{sample_name}.correction_progress.tsv"
     resume_path = dirs["checkpoint"] / f"{sample_name}.correct.resume.json"
-    valid_tmp = valid_path.with_name(valid_path.name + ".tmp")
-    trace_tmp = trace_path.with_name(trace_path.name + ".tmp")
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
     annotation = load_fb_annotation(config)
     whitelist_values_by_segment = {
@@ -422,11 +423,11 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
 
     def save_resume():
         state = {
-            "schema": 2, "tagforge_version": __version__, "fingerprint": fingerprint,
+            "schema": 3, "tagforge_version": __version__, "fingerprint": fingerprint,
             "trace_enabled": config.trace_enabled,
             "reads_completed": summary["total_reads"],
-            "safe_valid_bytes": valid_tmp.stat().st_size,
-            "safe_trace_bytes": trace_tmp.stat().st_size if config.trace_enabled else 0,
+            "safe_valid_parts": valid_writer.part,
+            "safe_trace_parts": trace_writer.part if config.trace_enabled else 0,
             "elapsed_seconds": previous_elapsed + time.monotonic() - started,
             "input_fraction": last_input_fraction,
             "summary": dict(summary),
@@ -437,21 +438,12 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         with atomic_text(resume_path) as state_handle:
             json.dump(state, state_handle, separators=(",", ":"))
 
-    def restore_output(tmp_path, final_path, safe_bytes, label):
-        if not tmp_path.exists() and final_path.exists() and final_path.stat().st_size == safe_bytes:
-            os.replace(final_path, tmp_path)
-        if not tmp_path.exists():
-            raise ConfigError(
-                f"Correction resume {label} output is missing: {tmp_path}. Use --overwrite to restart."
-            )
-        with open(tmp_path, "r+b") as raw_handle:
-            raw_handle.truncate(safe_bytes)
 
     resumed = False
     if resume and resume_path.exists():
         state = json.loads(resume_path.read_text(encoding="utf-8"))
         if (
-            state.get("schema") != 2
+            state.get("schema") != 3
             or state.get("tagforge_version") != __version__
             or state.get("fingerprint") != fingerprint
             or bool(state.get("trace_enabled")) != config.trace_enabled
@@ -460,9 +452,15 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                 f"Correction resume state does not match current inputs/config: {resume_path}. "
                 "Use --overwrite to restart safely."
             )
-        restore_output(valid_tmp, valid_path, int(state["safe_valid_bytes"]), "valid-read")
-        if config.trace_enabled:
-            restore_output(trace_tmp, trace_path, int(state["safe_trace_bytes"]), "trace")
+        valid_writer = ParquetFragmentWriter(
+            valid_parquet, fields, config.chunk_size, resume=True,
+            parts=int(state["safe_valid_parts"]),
+        )
+        trace_writer = (
+            ParquetFragmentWriter(trace_parquet, TRACE_FIELDS, config.chunk_size, resume=True,
+                                  parts=int(state["safe_trace_parts"]))
+            if config.trace_enabled else None
+        )
         summary.update(state.get("summary", {}))
         for name, values in state.get("segment_counters", {}).items():
             if name in counters:
@@ -471,31 +469,18 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         last_input_fraction = float(state.get("input_fraction", 0.0))
         resumed = True
         logger.info(
-            "correction_resume\treads=%s\tsafe_valid_bytes=%s\tsafe_trace_bytes=%s",
-            summary["total_reads"], state["safe_valid_bytes"], state.get("safe_trace_bytes", 0),
+            "correction_resume\treads=%s\tsafe_valid_parts=%s\tsafe_trace_parts=%s",
+            summary["total_reads"], valid_writer.part, trace_writer.part if trace_writer else 0,
         )
     else:
-        if resume and not resume_path.exists() and (valid_tmp.exists() or trace_tmp.exists()):
+        if resume and not resume_path.exists() and (valid_parquet.exists() or trace_parquet.exists()):
             raise ConfigError(
-                "Untracked correction temporary output cannot be resumed safely. Use --overwrite to restart."
+                "Untracked correction Parquet dataset cannot be resumed safely. Use --overwrite to restart."
             )
-        valid_tmp.unlink(missing_ok=True)
-        trace_tmp.unlink(missing_ok=True)
+        valid_writer = ParquetFragmentWriter(valid_parquet, fields, config.chunk_size)
+        trace_writer = (ParquetFragmentWriter(trace_parquet, TRACE_FIELDS, config.chunk_size)
+                        if config.trace_enabled else None)
         resume_path.unlink(missing_ok=True)
-        with gzip.open(
-            valid_tmp, "wt", encoding="utf-8", newline="", compresslevel=config.compression_level
-        ) as handle:
-            csv.DictWriter(
-                handle, fieldnames=fields, delimiter="\t", lineterminator="\n"
-            ).writeheader()
-        if config.trace_enabled:
-            with gzip.open(
-                trace_tmp, "wt", encoding="utf-8", newline="",
-                compresslevel=config.compression_level,
-            ) as handle:
-                csv.DictWriter(
-                    handle, fieldnames=TRACE_FIELDS, delimiter="\t", lineterminator="\n"
-                ).writeheader()
         save_resume()
 
     progress_fields = [
@@ -523,8 +508,8 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             "elapsed_seconds": f"{elapsed:.2f}", "reads_per_second": f"{rate:.2f}",
             "eta_seconds": f"{eta:.2f}" if eta else "", "estimated_finish": finish,
             "resume_skip_percent": f"{resume_skip * 100:.2f}" if resume_skip is not None else "",
-            "valid_tmp_bytes": valid_tmp.stat().st_size if valid_tmp.exists() else 0,
-            "trace_tmp_bytes": trace_tmp.stat().st_size if trace_tmp.exists() else 0,
+            "valid_tmp_bytes": parquet_size(valid_parquet),
+            "trace_tmp_bytes": parquet_size(trace_parquet) if config.trace_enabled else 0,
         }
         write_tsv(progress_path, progress_fields, [progress])
         logger.info(
@@ -547,23 +532,11 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
 
     def append_correction_member(result):
         valid_rows, trace_rows, local_counters, local_summary = result
-        with gzip.open(
-            valid_tmp, "at", encoding="utf-8", newline="",
-            compresslevel=config.compression_level,
-        ) as valid_handle:
-            valid_writer = csv.DictWriter(
-                valid_handle, fieldnames=fields, delimiter="\t", lineterminator="\n"
-            )
-            valid_writer.writerows(valid_rows)
-        if config.trace_enabled:
-            with gzip.open(
-                trace_tmp, "at", encoding="utf-8", newline="",
-                compresslevel=config.compression_level,
-            ) as trace_handle:
-                trace_writer = csv.DictWriter(
-                    trace_handle, fieldnames=TRACE_FIELDS, delimiter="\t", lineterminator="\n"
-                )
-                trace_writer.writerows(trace_rows)
+        valid_writer.writerows(valid_rows)
+        valid_writer.flush()
+        if trace_writer is not None:
+            trace_writer.writerows(trace_rows)
+            trace_writer.flush()
         summary.update(local_summary)
         _merge_counter_maps(counters, local_counters)
 
@@ -614,7 +587,7 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                 update_progress("running", last_input_fraction)
                 next_commit += 1
 
-        for batch, input_fraction in tsv_batches(source, config.chunk_size):
+        for batch, input_fraction in record_batches(source, config.chunk_size):
             if reads_seen < reads_to_skip:
                 remaining = reads_to_skip - reads_seen
                 if remaining >= len(batch):
@@ -645,9 +618,9 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             collect_finished(done)
             commit_ready()
-        os.replace(valid_tmp, valid_path)
-        if config.trace_enabled:
-            os.replace(trace_tmp, trace_path)
+        valid_writer.close()
+        if trace_writer is not None:
+            trace_writer.close()
         fields, stat_rows, result_summary = _correction_stats(config, counters, summary)
         write_tsv(stats_path, fields, stat_rows)
         resume_path.unlink(missing_ok=True)
@@ -658,7 +631,7 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     finally:
         if executor is not None:
             executor.shutdown()
-    outputs = [valid_path, stats_path] + ([trace_path] if config.trace_enabled else [])
+    outputs = [valid_parquet, stats_path] + ([trace_parquet] if config.trace_enabled else [])
     result_summary["wall_seconds"] = previous_elapsed + time.monotonic() - started
     result_summary["reads_per_second"] = (
         summary["total_reads"] / result_summary["wall_seconds"]

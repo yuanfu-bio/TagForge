@@ -332,7 +332,10 @@ Meaning:
 File:
 
 ```
-matrix/{sample}.raw_count_matrix.tsv.gz
+matrix/{sample}.raw_molecule_pairs.parquet
+matrix/{sample}.raw_matrix_summary.json
+
+Dense TSV is exported only on demand with `tagforge export-matrix --format tsv`.
 ```
 
 Rows:
@@ -437,8 +440,10 @@ When the library is over-sequenced, sequencing saturation may first increase and
 At that ratio, generate:
 
 ```
-matrix/{sample}.optimal_saturation_count_matrix.tsv.gz
-detail/{sample}.optimal_saturation_molecule_detail.tsv.gz
+matrix/{sample}.optimal_molecule_pairs.parquet
+matrix/{sample}.optimal_matrix_summary.json
+
+These are produced only when the optimal ratio is below 1.0; at 1.0 the raw artifacts are reused.
 ```
 
 The detail file should retain:

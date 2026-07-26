@@ -8,6 +8,7 @@ from . import __version__
 from .config import ConfigError, load_config
 from .external_tools import check_external_tools
 from .pipeline import run_pipeline, run_step
+from .sparse_matrix import export_matrix, pair_path
 from .quick_test import quick_test_sample
 from .reports import batch_report, write_summary
 from .slurm import make_slurm
@@ -128,6 +129,13 @@ def parser():
     )
     for step in ("extract", "correct", "dedup", "matrix", "pair-map", "downsample", "report"):
         p = commands.add_parser(step, help=f"Run the {step} step"); _common(p)
+    export = commands.add_parser("export-matrix", help="Export a sparse matrix on demand")
+    export.add_argument("--config", required=True)
+    export.add_argument("--sample", required=True)
+    export.add_argument("--format", choices=("parquet", "mtx", "tsv"), default="parquet")
+    export.add_argument("--out", required=True)
+    migrate = commands.add_parser("migrate-parquet", help="Build sparse Parquet matrix artifacts from existing molecule detail")
+    _common(migrate)
     summary = commands.add_parser("summary", help="Rebuild the multi-sample summary from completed samples")
     summary.add_argument("--config", required=True, help="YAML configuration file")
     quick = commands.add_parser("quick-test", help="Inspect a small read subset without running the full pipeline")
@@ -191,6 +199,18 @@ def main(argv=None):
                 print(f"Generated Slurm array script: {files[-1]} with samples table {files[0]}")
             else:
                 print(f"Generated {len(files)-1} Slurm jobs and {files[-1]}")
+            return 0
+        if args.command == "export-matrix":
+            sample = config.sample(args.sample)
+            del sample
+            output = Path(args.out)
+            export_matrix(pair_path(config.output_dir / args.sample / "04_matrix", args.sample), output, args.format, config.target_name("barcode1"))
+            print(f"Exported {args.format} matrix: {output}")
+            return 0
+        if args.command == "migrate-parquet":
+            for name in _selected(config, args.sample):
+                run_step(config, name, "matrix", overwrite=True)
+            print(f"Sparse matrix migration completed for: {', '.join(_selected(config, args.sample))}")
             return 0
         if args.command == "summary":
             output, samples = write_summary(config)
