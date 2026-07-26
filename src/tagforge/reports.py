@@ -33,15 +33,20 @@ def _matrix_summary(path: Path):
 
 
 def _pi_seq_pb_summary(path: Path):
-    """Return per-PB molecule and detected-protein counts from the matrix."""
+    """Stream PB statistics, retaining only the two Top-20 views."""
+    import heapq
+    molecule_heap = []; protein_heap = []; molecule_bins = [0] * 8; protein_bins = [0] * 8; total = 0
     with gzip.open(path, "rt", encoding="utf-8") as handle:
-        reader = csv.reader(handle, delimiter="\t")
-        next(reader, [])
-        records = []
+        reader = csv.reader(handle, delimiter="\t"); next(reader, [])
         for row in reader:
-            counts = [int(value) for value in row[1:]]
-            records.append({"PB": row[0], "Molecules": sum(counts), "Proteins": sum(value > 0 for value in counts)})
-    return records
+            counts = [int(value) for value in row[1:]]; molecules = sum(counts); proteins = sum(value > 0 for value in counts); total += 1
+            molecule_bins[min(molecules, 8) - 1] += 1; protein_bins[min(proteins, 8) - 1] += 1
+            for heap, value in ((molecule_heap, molecules), (protein_heap, proteins)):
+                item = (value, row[0], molecules, proteins)
+                if len(heap) < 20: heapq.heappush(heap, item)
+                elif item > heap[0]: heapq.heapreplace(heap, item)
+    top = lambda heap, key: [{"PB": item[1], "Molecules": item[2], "Proteins": item[3]} for item in sorted(heap, reverse=True)]
+    return {"total": total, "molecule_bins": molecule_bins, "protein_bins": protein_bins, "top_molecules": top(molecule_heap, "Molecules"), "top_proteins": top(protein_heap, "Proteins")}
 
 
 def _pi_seq_ratios(pi_qc):
@@ -53,17 +58,15 @@ def _pi_seq_ratios(pi_qc):
 
 
 def _pi_seq_matrix_section(pb_records, pi_qc, dominance_threshold):
-    top_molecule_pbs = sorted(pb_records, key=lambda row: (-row["Molecules"], row["PB"]))[:20]
-    top_protein_pbs = sorted(pb_records, key=lambda row: (-row["Proteins"], row["PB"]))[:20]
+    top_molecule_pbs = pb_records["top_molecules"]
+    top_protein_pbs = pb_records["top_proteins"]
     mp_ratio, dominant_ratio, removed_ratio = _pi_seq_ratios(pi_qc)
-    total_pbs = len(pb_records) or 1
-    multi_molecule_pbs = sum(row["Molecules"] >= 2 for row in pb_records)
-    multi_protein_pbs = sum(row["Proteins"] >= 2 for row in pb_records)
+    total_pbs = pb_records["total"] or 1
+    multi_molecule_pbs = total_pbs - pb_records["molecule_bins"][0]
+    multi_protein_pbs = total_pbs - pb_records["protein_bins"][0]
 
     def distribution(field):
-        counts = [0] * 8
-        for row in pb_records:
-            counts[min(row[field], 8) - 1] += 1
+        counts = pb_records["molecule_bins" if field == "Molecules" else "protein_bins"]
         labels = [str(value) for value in range(1, 8)] + ["8+"]
         return [{"label": label, "count": count, "ratio": count / total_pbs * 100}
                 for label, count in zip(labels, counts)]
@@ -117,7 +120,7 @@ def report_sample(config: TagForgeConfig, sample_name: str):
     report_html = dirs["report"] / f"{sample_name}.report.html"
     stat_records = list(open_tsv(stats)); metric_records = list(open_tsv(metrics)); point_records = list(open_tsv(point))
     b1_count, features = _matrix_summary(matrix)
-    pi_seq_pb_records = _pi_seq_pb_summary(matrix) if config.pi_seq_enabled else []
+    pi_seq_pb_records = _pi_seq_pb_summary(matrix) if config.pi_seq_enabled else None
     pi_qc = next(open_tsv(dirs["detail"] / f"{sample_name}.pi_seq_qc.tsv"), {}) if config.pi_seq_enabled else {}
     if config.pi_seq_enabled:
         molecule_count = int(pi_qc.get("retained_molecules", 0) or 0)
@@ -141,7 +144,7 @@ def report_sample(config: TagForgeConfig, sample_name: str):
               ("Correction Stats", _rows(stats)), ("UMI Stats", [["Metric","Value"],["Molecules",molecule_count],["Supporting reads",read_count]]),
               ("Downsample Metrics", _rows(metrics)), ("Optimal Saturation", _rows(point)), ("Top Features", feature_rows[:1001])]
     if config.pi_seq_enabled:
-        top_pbs = sorted(pi_seq_pb_records, key=lambda row: (-row["Molecules"], row["PB"]))[:50]
+        top_pbs = pi_seq_pb_records["top_molecules"]
         sheets.append(("PI-seq Matrix", [["PB", "Molecules", "Proteins"]] + [[row["PB"], row["Molecules"], row["Proteins"]] for row in top_pbs]))
     ratios = [float(r["downsample_ratio"]) for r in metric_records]
     saturation = [float(r["sequencing_saturation"]) for r in metric_records]
