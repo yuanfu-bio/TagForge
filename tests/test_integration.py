@@ -16,7 +16,8 @@ from tagforge import __version__
 from tagforge.config import load_config
 from tagforge.barcode_correct import correct_sample
 from tagforge.extract import extract_sample
-from tagforge.fastq import paired_fastq_batches
+from tagforge.extract import _paired_blocks
+from tagforge.barcode_correct import _correct_part
 from tagforge.columnar import open_records, record_batches
 
 
@@ -104,13 +105,13 @@ class IntegrationTests(unittest.TestCase):
             config.output_dir = Path(td) / "output"
             config.chunk_size = 3
             config.threads = 1
-            real_batches = paired_fastq_batches
+            real_blocks = _paired_blocks
 
             def interrupted_batches(r1, r2, batch_size):
-                yield next(iter(real_batches(r1, r2, batch_size)))
+                yield next(iter(real_blocks(r1, r2, batch_size)))
                 raise RuntimeError("simulated interruption")
 
-            with patch("tagforge.extract.paired_fastq_batches", side_effect=interrupted_batches):
+            with patch("tagforge.extract._paired_blocks", side_effect=interrupted_batches):
                 with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
                     extract_sample(config, "example", resume=False)
             resume_file = config.output_dir / "example/00_logs/checkpoints/example.extract.resume.json"
@@ -123,16 +124,16 @@ class IntegrationTests(unittest.TestCase):
 
             # Correction commits complete Parquet fragments for both outputs and
             # restores counters and output fragment boundaries after interruption.
-            real_record_batches = record_batches
+            real_correct_part = _correct_part
+            calls = []
 
-            def interrupted_correction_batches(path, batch_size):
-                yield next(iter(real_record_batches(path, batch_size)))
-                raise RuntimeError("simulated correction interruption")
+            def interrupted_correction_part(*args):
+                if calls:
+                    raise RuntimeError("simulated correction interruption")
+                calls.append(1)
+                return real_correct_part(*args)
 
-            with patch(
-                "tagforge.barcode_correct.record_batches",
-                side_effect=interrupted_correction_batches,
-            ):
+            with patch("tagforge.barcode_correct._correct_part", side_effect=interrupted_correction_part):
                 with self.assertRaisesRegex(RuntimeError, "simulated correction interruption"):
                     correct_sample(config, "example", resume=False)
             correction_resume = (

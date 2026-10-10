@@ -6,6 +6,22 @@ use the version declared in `tagforge.__version__`.
 
 ## Unreleased
 
+- Parallelise `extract`: the coordinator only reads raw FASTQ blocks; workers
+  parse, extract, aggregate segment statistics and write their own Parquet
+  fragments. Exact (`linker.max_mismatch: 0`) linker search uses `str.find`.
+  Output tables and statistics are identical to the previous implementation;
+  resume state written by earlier builds remains valid.
+- Speed up `correct`: workers read and write whole fragments, distance-1
+  whitelist correction enumerates neighbours instead of scanning the whitelist,
+  and trace rows are built only when tracing is enabled.
+- Add the `duckdb` UMI aggregation backend (now the default): DuckDB aggregates
+  reads into hash buckets, workers cluster buckets independently and write
+  fragments. PI-seq multi-PB filtering also runs in DuckDB. New
+  `performance.umi_duckdb_memory_mb` (default 65536). `external_sort` and
+  `sqlite` remain available. Molecule row order is no longer globally sorted.
+- On ABL00074 PB-FB-A (373.7M valid reads), `dedup` including PI filtering fell
+  from 8329 s to 765 s with identical molecule counts, PI QC and filtered tables.
+
 ## 2.0.0 — 2026-10-09 (local release preparation)
 
 - Number processing directories from `01_extracted` to `06_report`; move valid

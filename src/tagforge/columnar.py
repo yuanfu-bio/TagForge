@@ -123,6 +123,21 @@ def write_parquet(path: Path, rows, fields: list[str], batch_size: int = 200000,
 
 
 
+def write_parquet_columns(path: Path, columns: dict, fields: list[str], *, compression_level: int = 3, compression: str = "snappy"):
+    """Atomically write one Parquet fragment from column lists (typed like write_parquet)."""
+    pa, pq = _pa()
+    compression = validate_parquet_compression(compression)
+    options = {"compression": compression}
+    if compression == "zstd":
+        options["compression_level"] = compression_level
+    schema = table_schema(fields)
+    table = pa.Table.from_pydict({field: columns[field] for field in fields}, schema=schema)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    pq.write_table(table, temporary, **options)
+    temporary.replace(path)
+
+
 def is_parquet_table(path: Path) -> bool:
     """Whether ``path`` is a Parquet file or a nonempty Parquet dataset."""
     return (path.suffix == ".parquet" and path.is_file()) or (path.is_dir() and any(path.glob("*.parquet")))

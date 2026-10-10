@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional
 
 from . import __version__
-from .columnar import ParquetFragmentWriter, parquet_size, record_batches, resolve_table
+from .columnar import (ParquetFragmentWriter, _pa, parquet_files, parquet_size, record_batches,
+                       resolve_table, write_parquet_columns)
 from .config import CorrectionConfig, SegmentConfig, TagForgeConfig, ConfigError
 from .extract import decode_method_payload, decode_segment_payload, hamming
 from .io_utils import atomic_text, sample_dirs, write_progress, write_json, tsv_batches, write_tsv
@@ -51,6 +52,23 @@ class WhitelistCorrector:
             raise ConfigError(f"Whitelist sequences must all have configured length {length}")
         self.config = config
         self.length = length
+        # Substitution neighbours can be enumerated directly when every
+        # whitelist sequence is plain ACGT; otherwise fall back to a full scan.
+        self._acgt_whitelist = all(set(value) <= set("ACGT") for value in self.values)
+
+    def _neighbours(self, shifted: str):
+        """Whitelist sequences at Hamming distance exactly 1, in sorted order."""
+        found = []
+        value_set = self.value_set
+        for index, current in enumerate(shifted):
+            prefix, suffix = shifted[:index], shifted[index + 1:]
+            for base in "ACGT":
+                if base != current:
+                    candidate = prefix + base + suffix
+                    if candidate in value_set:
+                        found.append(candidate)
+        found.sort()
+        return found
 
     @lru_cache(maxsize=200000)
     def correct(self, raw: str, anchor: int = 0) -> CorrectionResult:
@@ -78,7 +96,12 @@ class WhitelistCorrector:
             if shifted in self.value_set:
                 candidates.append((shift, 0, shifted, shifted))
                 continue
-            if max_mismatch:
+            if max_mismatch == 1 and self._acgt_whitelist:
+                # shifted is not a member, so the nearest entries are exactly the
+                # distance-1 neighbours; anything farther exceeds the limit.
+                for known in self._neighbours(shifted):
+                    candidates.append((shift, 1, known, shifted))
+            elif max_mismatch:
                 best_distance = max_mismatch + 1
                 best = []
                 for known in self.values:
@@ -216,7 +239,7 @@ def _correct_batch(batch, config, correctors, annotation):
     trace_rows = []
     for row in batch:
         valid_row, rows = _correct_row(
-            row, config, correctors, annotation, counters, summary
+            row, config, correctors, annotation, counters, summary, config.trace_enabled
         )
         if valid_row is not None:
             valid_rows.append(valid_row)
@@ -234,6 +257,50 @@ def _correct_batch_worker(batch):
     if _WORKER_CONFIG is None or _WORKER_CORRECTORS is None or _WORKER_ANNOTATION is None:
         raise RuntimeError("Correction worker was not initialized")
     return _correct_batch(batch, _WORKER_CONFIG, _WORKER_CORRECTORS, _WORKER_ANNOTATION)
+
+
+def _read_part_rows(path):
+    _, pq = _pa()
+    table = pq.read_table(path)
+    names = table.column_names
+    columns = [table.column(name).to_pylist() for name in names]
+    return [
+        {name: "" if value is None else str(value) for name, value in zip(names, values)}
+        for values in zip(*columns)
+    ]
+
+
+def _correct_part(task, config, correctors, annotation):
+    """Correct one extracted fragment and commit its output fragments."""
+    index, path, valid_dir, trace_dir, compression, compression_level = task
+    valid_rows, trace_rows, local_counters, local_summary = _correct_batch(
+        _read_part_rows(path), config, correctors, annotation)
+    name = f"part-{index:08d}.parquet"
+    fields = valid_fields(config)
+    write_parquet_columns(
+        Path(valid_dir) / name, {field: [row[field] for row in valid_rows] for field in fields},
+        fields, compression_level=compression_level, compression=compression)
+    if trace_dir is not None:
+        write_parquet_columns(
+            Path(trace_dir) / name,
+            {field: [row[field] for row in trace_rows] for field in TRACE_FIELDS},
+            TRACE_FIELDS, compression_level=compression_level, compression=compression)
+    return len(valid_rows), len(trace_rows), local_counters, local_summary
+
+
+def _correct_part_worker(task):
+    if _WORKER_CONFIG is None or _WORKER_CORRECTORS is None or _WORKER_ANNOTATION is None:
+        raise RuntimeError("Correction worker was not initialized")
+    return _correct_part(task, _WORKER_CONFIG, _WORKER_CORRECTORS, _WORKER_ANNOTATION)
+
+
+def _fragment_dataset(source: Path):
+    """Row-counted fragment list for a Parquet dataset directory, else None."""
+    if not source.is_dir():
+        return None
+    _, pq = _pa()
+    files = parquet_files(source)
+    return [(part, pq.ParquetFile(part).metadata.num_rows) for part in files]
 
 
 TRACE_FIELDS = ["read_id", "segment_name", "target_type", "raw_sequence", "shifted_sequence",
@@ -258,7 +325,7 @@ def _correction_fingerprint(config: TagForgeConfig, source: Path, sample_name: s
     return resume_fingerprint(config, sample_name, "correct")
 
 
-def evaluate_extracted_read(row, config, correctors, annotation, counters, summary):
+def evaluate_extracted_read(row, config, correctors, annotation, counters, summary, trace=True):
     """Shared formal/QC read eligibility and exclusive rejection counters."""
     summary["total_reads"] += 1
     segment_columns = {
@@ -314,7 +381,8 @@ def evaluate_extracted_read(row, config, correctors, annotation, counters, summa
                 count[f"{source_method}_valid"] += 1
             else:
                 count["invalid_reads"] += 1
-            trace_rows.append({
+            if trace:
+                trace_rows.append({
                 "read_id": row["read_id"], "segment_name": segment.name,
                 "target_type": segment.target_name or target, "raw_sequence": result.raw_sequence,
                 "shifted_sequence": result.shifted_sequence,
@@ -548,13 +616,21 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                 flush=True,
             )
 
-    def append_correction_member(result):
+    def append_correction_member(result, committed=False):
         valid_rows, trace_rows, local_counters, local_summary = result
-        valid_writer.writerows(valid_rows)
-        valid_writer.flush()
-        if trace_writer is not None:
-            trace_writer.writerows(trace_rows)
-            trace_writer.flush()
+        if committed:
+            # Workers already wrote their fragments; only advance the counters.
+            valid_writer.part += 1
+            valid_writer.rows += valid_rows
+            if trace_writer is not None:
+                trace_writer.part += 1
+                trace_writer.rows += trace_rows
+        else:
+            valid_writer.writerows(valid_rows)
+            valid_writer.flush()
+            if trace_writer is not None:
+                trace_writer.writerows(trace_rows)
+                trace_writer.flush()
         summary.update(local_summary)
         _merge_counter_maps(counters, local_counters)
 
@@ -599,28 +675,64 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             nonlocal last_input_fraction, next_commit
             while next_commit in completed:
                 result, input_fraction = completed.pop(next_commit)
-                append_correction_member(result)
+                append_correction_member(result, isinstance(result[0], int))
                 last_input_fraction = max(last_input_fraction, input_fraction)
                 save_resume()
                 update_progress("running", last_input_fraction)
                 next_commit += 1
 
-        for batch, input_fraction in record_batches(source, config.chunk_size):
+        parts_checked = False
+        fragments = _fragment_dataset(source)
+        if fragments is not None:
+            total_rows = sum(count for _, count in fragments) or 1
+            rows_before = 0
+            work_items = []
+            for index, (part, count) in enumerate(fragments):
+                rows_before += count
+                work_items.append((count, min(1.0, rows_before / total_rows), index, part))
+        else:
+            work_items = None
+
+        def source_items():
+            if work_items is not None:
+                yield from work_items
+            else:
+                for rows, fraction in record_batches(source, config.chunk_size):
+                    yield len(rows), fraction, None, rows
+
+        for item_rows, input_fraction, part_index, payload in source_items():
             if reads_seen < reads_to_skip:
                 remaining = reads_to_skip - reads_seen
-                if remaining >= len(batch):
-                    reads_seen += len(batch)
+                if remaining >= item_rows:
+                    reads_seen += item_rows
                     update_progress(
                         "resuming", last_input_fraction,
                         min(1.0, reads_seen / reads_to_skip) if reads_to_skip else 1.0,
                     )
                     continue
-                batch = batch[remaining:]
+                if part_index is not None:
+                    raise ConfigError(
+                        "Correction resume state is not aligned to extracted fragments; "
+                        "use --overwrite to restart safely."
+                    )
+                payload = payload[remaining:]
                 reads_seen += remaining
+            if part_index is not None:
+                if not parts_checked and part_index != valid_writer.part:
+                    raise ConfigError(
+                        "Committed correction fragments do not match the extracted fragments; "
+                        "use --overwrite to restart safely."
+                    )
+                parts_checked = True
+                task = (part_index, str(payload), str(valid_parquet),
+                        str(trace_parquet) if config.trace_enabled else None,
+                        getattr(config, "parquet_compression", "snappy"),
+                        getattr(config, "compression_level", 3))
             if executor is None:
-                append_correction_member(
-                    _correct_batch(batch, config, correctors, annotation)
-                )
+                if part_index is not None:
+                    append_correction_member(_correct_part(task, config, correctors, annotation), True)
+                else:
+                    append_correction_member(_correct_batch(payload, config, correctors, annotation))
                 last_input_fraction = max(last_input_fraction, input_fraction)
                 save_resume()
                 update_progress("running", last_input_fraction)
@@ -629,7 +741,10 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                 done, _ = wait(pending, return_when=FIRST_COMPLETED)
                 collect_finished(done)
                 commit_ready()
-            future = executor.submit(_correct_batch_worker, batch)
+            if part_index is not None:
+                future = executor.submit(_correct_part_worker, task)
+            else:
+                future = executor.submit(_correct_batch_worker, payload)
             pending[future] = (next_sequence, input_fraction)
             next_sequence += 1
         while pending:

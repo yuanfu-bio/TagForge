@@ -5,7 +5,7 @@ import gzip
 import json
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -14,9 +14,9 @@ import time
 from typing import Optional
 
 from . import __version__
-from .columnar import ParquetFragmentWriter, open_records, parquet_size
+from .columnar import ParquetFragmentWriter, open_records, parquet_size, write_parquet_columns
 from .config import ConfigError, SegmentConfig, TagForgeConfig
-from .fastq import paired_fastq_batches
+from .fastq import FastqError, PairedRead, _physical_position
 from .io_utils import atomic_text, sample_dirs, write_progress, write_tsv
 from .logging_utils import sample_logger
 
@@ -68,6 +68,15 @@ def _find_linker(sequence: str, linker: str, max_mismatch: int, start: int = 0) 
 
 def _find_all_linkers(sequence: str, linker: str, max_mismatch: int) -> list[int]:
     """Enumerate all full-length substitution-only matches, verified by Cutadapt."""
+    if max_mismatch == 0:
+        # Exact, possibly overlapping occurrences: identical to the windowed
+        # Cutadapt verification below, without a Python loop over every offset.
+        positions = []
+        found = sequence.find(linker)
+        while found != -1:
+            positions.append(found)
+            found = sequence.find(linker, found + 1)
+        return positions
     adapter = _cutadapt_adapter(linker, max_mismatch)
     positions = []
     width = len(linker)
@@ -332,6 +341,121 @@ def decode_method_payload(payload: str, segments) -> dict[str, str]:
     return {segment.name: names[code] for segment, code in zip(segments, stripped)}
 
 
+def _count_segment(counter, segment, stat):
+    """Accumulate one read's runtime statistics for one segment."""
+    counter["total_reads"] += 1
+    counter["final_success"] += int(stat["success"])
+    counter["cutadapt_microseconds"] += round(stat["linker_elapsed_seconds"] * 1_000_000)
+    if segment.method in {"linker", "linker_fixed"}:
+        counter["linker_attempted"] += 1
+        linker_success = stat["method"] == "linker" and stat["success"]
+        counter["linker_success"] += int(linker_success)
+        counter["linker_failed"] += int(not linker_success)
+        if stat["linker_failure_reason"]:
+            reason = stat["linker_failure_reason"].split(":", 1)[0]
+            if reason.startswith("right_linker_not_found"):
+                reason = "right_linker_not_found"
+            counter[reason] += 1
+        counter["reads_with_multiple_left_matches"] += int(stat["left_linker_matches"] > 1)
+        counter["reads_with_multiple_right_matches"] += int(stat["right_linker_matches"] > 1)
+        counter["reads_with_multiple_candidate_pairs"] += int(stat["linker_candidate_pairs"] > 1)
+        counter["linker_candidate_pairs_total"] += stat["linker_candidate_pairs"]
+        if stat["selected_linker_gap"] >= 0:
+            counter["selected_gap_count"] += 1
+            counter["selected_gap_sum"] += stat["selected_linker_gap"]
+            gap_key = f"selected_gap_{stat['selected_linker_gap']}"
+            counter[gap_key] += 1
+    fixed_attempted = segment.method == "fixed" or (
+        segment.method == "linker_fixed" and stat["method"] != "linker"
+    )
+    if fixed_attempted:
+        counter["fixed_attempted"] += 1
+        fixed_success = stat["method"] == "fixed" and stat["success"]
+        counter["fixed_success"] += int(fixed_success)
+        counter["fixed_failed"] += int(not fixed_success)
+
+
+def _fastq_block_records(data: bytes, path, first_line: int):
+    """Parse a block of whole FASTQ records; mirrors fastq._records validation."""
+    lines = data.decode("utf-8").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if len(lines) % 4:
+        raise FastqError(f"Truncated FASTQ record ending near line {first_line + len(lines)}: {path}")
+    records = []
+    for index in range(0, len(lines), 4):
+        header, seq, plus, qual = lines[index:index + 4]
+        line_number = first_line + index + 4
+        if not header.startswith("@") or not plus.startswith("+"):
+            raise FastqError(f"Malformed FASTQ record ending near line {line_number}: {path}")
+        seq, qual = seq.rstrip("\r").upper(), qual.rstrip("\r")
+        if len(seq) != len(qual):
+            raise FastqError(f"Sequence/quality length mismatch near line {line_number}: {path}")
+        read_id = header[1:].split()[0]
+        if read_id.endswith("/1") or read_id.endswith("/2"):
+            read_id = read_id[:-2]
+        records.append((read_id, seq))
+    return records
+
+
+def _extract_block(task):
+    """Extract one block of read pairs and commit it as one Parquet fragment.
+
+    Runs in a worker: parsing, extraction, per-segment statistics and Parquet
+    encoding all happen here so the coordinating process only moves bytes.
+    """
+    (index, r1_data, r2_data, first_line, r1_path, r2_path, segments, segment_columns,
+     fields, fragment, compression, compression_level) = task
+    first = _fastq_block_records(r1_data, r1_path, first_line)
+    second = _fastq_block_records(r2_data, r2_path, first_line)
+    if len(first) != len(second):
+        raise FastqError(f"Paired FASTQ files have different record counts: {r1_path}, {r2_path}")
+    segments = tuple(segments)
+    counters = {segment.name: Counter() for segment in segments}
+    columns = {field: [] for field in fields}
+    extracted = 0
+    for (id1, seq1), (id2, seq2) in zip(first, second):
+        if id1 != id2:
+            raise FastqError(f"Read ID mismatch: R1={id1!r}, R2={id2!r}")
+        row, runtime_stats = _extract_record(
+            PairedRead(id1, seq1, "", seq2, ""), segments, segment_columns)
+        extracted += row["status"] == "success"
+        for segment in segments:
+            _count_segment(counters[segment.name], segment, runtime_stats[segment.name])
+        for field in fields:
+            columns[field].append(row[field])
+    write_parquet_columns(fragment, columns, fields, compression_level=compression_level,
+                          compression=compression)
+    return index, len(first), extracted, {name: dict(counter) for name, counter in counters.items()}
+
+
+def _read_fastq_block(handle, records: int):
+    lines = list(islice(handle, records * 4))
+    return b"".join(lines), len(lines)
+
+
+def _paired_blocks(r1, r2, records: int):
+    """Yield (index, r1_bytes, r2_bytes, first_line, input_fraction) raw FASTQ blocks."""
+    total_bytes = r1.stat().st_size + r2.stat().st_size
+    opener = lambda path: gzip.open(path, "rb") if str(path).endswith(".gz") else open(path, "rb")
+    with opener(r1) as h1, opener(r2) as h2:
+        index = 0
+        while True:
+            data1, count1 = _read_fastq_block(h1, records)
+            data2, count2 = _read_fastq_block(h2, records)
+            if not count1 and not count2:
+                return
+            if count1 != count2:
+                raise FastqError(f"Paired FASTQ files have different record counts: {r1}, {r2}")
+            if count1 < records * 4:
+                fraction = 1.0
+            else:
+                consumed = _physical_position(h1) + _physical_position(h2)
+                fraction = min(0.9999, consumed / total_bytes) if total_bytes else 0.9999
+            yield index, data1, data2, index * records * 4, fraction
+            index += 1
+
+
 def _resume_fingerprint(config: TagForgeConfig, sample) -> str:
     from .checkpoint import resume_fingerprint
     return resume_fingerprint(config, sample.sample, "extract")
@@ -451,9 +575,6 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         preview_handle = open(preview_output, "w", encoding="utf-8", newline="")
         preview_writer = csv.DictWriter(preview_handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
         preview_writer.writeheader()
-        if resumed and output_writer.rows:
-            preview_writer.writerows(islice(open_records(parquet_output),
-                min(totals["total_reads"], config.extraction_preview_reads)))
         preview_handle.flush()
     else:
         preview_output.unlink(missing_ok=True)
@@ -473,84 +594,60 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             0.0 if resumed else None,
         )
         reads_to_skip = totals["total_reads"]
-        reads_seen = 0
-        for batch, input_fraction in paired_fastq_batches(
-            sample.r1, sample.r2, config.chunk_size
+        records_per_block = config.chunk_size
+        if reads_to_skip and (
+            reads_to_skip % records_per_block or output_writer.part * records_per_block != reads_to_skip
         ):
-            if reads_seen < reads_to_skip:
-                remaining = reads_to_skip - reads_seen
-                if remaining >= len(batch):
-                    reads_seen += len(batch)
-                    skip_fraction = min(1.0, reads_seen / reads_to_skip) if reads_to_skip else 1.0
-                    if reads_seen >= reads_to_skip:
-                        last_input_fraction = max(last_input_fraction, input_fraction)
-                        resume_fraction_known = True
-                    update_progress(
-                        "resuming",
-                        last_input_fraction if resume_fraction_known else None,
-                        skip_fraction,
-                    )
-                    continue
-                batch = batch[remaining:]
-                reads_seen += remaining
-            if executor is None:
-                extracted = (
-                    _extract_record(record, config.segments, segment_columns)
-                    for record in batch
-                )
-            else:
-                map_chunksize = max(1, min(1000, len(batch) // config.threads))
-                extracted = executor.map(
-                    _extract_record, batch, repeat(tuple(config.segments), len(batch)),
-                    repeat(segment_columns, len(batch)),
-                    chunksize=map_chunksize,
-                )
-            for row, runtime_stats in extracted:
-                totals["total_reads"] += 1
-                if row["status"] == "success":
-                    totals["extracted_reads"] += 1
-                for segment in config.segments:
-                    stat = runtime_stats[segment.name]
-                    counter = segment_counters[segment.name]
-                    counter["total_reads"] += 1
-                    counter["final_success"] += int(stat["success"])
-                    counter["cutadapt_microseconds"] += round(stat["linker_elapsed_seconds"] * 1_000_000)
-                    if segment.method in {"linker", "linker_fixed"}:
-                        counter["linker_attempted"] += 1
-                        linker_success = stat["method"] == "linker" and stat["success"]
-                        counter["linker_success"] += int(linker_success)
-                        counter["linker_failed"] += int(not linker_success)
-                        if stat["linker_failure_reason"]:
-                            reason = stat["linker_failure_reason"].split(":", 1)[0]
-                            if reason.startswith("right_linker_not_found"):
-                                reason = "right_linker_not_found"
-                            counter[reason] += 1
-                        counter["reads_with_multiple_left_matches"] += int(stat["left_linker_matches"] > 1)
-                        counter["reads_with_multiple_right_matches"] += int(stat["right_linker_matches"] > 1)
-                        counter["reads_with_multiple_candidate_pairs"] += int(stat["linker_candidate_pairs"] > 1)
-                        counter["linker_candidate_pairs_total"] += stat["linker_candidate_pairs"]
-                        if stat["selected_linker_gap"] >= 0:
-                            counter["selected_gap_count"] += 1
-                            counter["selected_gap_sum"] += stat["selected_linker_gap"]
-                            gap_key = f"selected_gap_{stat['selected_linker_gap']}"
-                            counter[gap_key] += 1
-                    fixed_attempted = segment.method == "fixed" or (
-                        segment.method == "linker_fixed" and stat["method"] != "linker"
-                    )
-                    if fixed_attempted:
-                        counter["fixed_attempted"] += 1
-                        fixed_success = stat["method"] == "fixed" and stat["success"]
-                        counter["fixed_success"] += int(fixed_success)
-                        counter["fixed_failed"] += int(not fixed_success)
-                output_writer.writerow(row)
-                if preview_writer is not None and totals["total_reads"] <= config.extraction_preview_reads:
-                    preview_writer.writerow(row)
-            if preview_handle is not None:
-                preview_handle.flush()
-            output_writer.flush()
-            last_input_fraction = max(last_input_fraction, input_fraction)
+            raise ConfigError(
+                "Extraction resume state is not aligned to chunk_size blocks; "
+                "use --overwrite to restart safely."
+            )
+        skip_blocks = reads_to_skip // records_per_block
+        in_flight = deque()
+        window = 1 if executor is None else max(2, config.threads)
+        compression = getattr(config, "parquet_compression", "snappy")
+        compression_level = getattr(config, "compression_level", 3)
+        segments = tuple(config.segments)
+
+        def commit(future, fraction):
+            nonlocal last_input_fraction
+            _, reads, extracted, block_counters = future.result()
+            totals["total_reads"] += reads
+            totals["extracted_reads"] += extracted
+            for name, values in block_counters.items():
+                segment_counters[name].update(values)
+            output_writer.part += 1
+            output_writer.rows += reads
+            last_input_fraction = max(last_input_fraction, fraction)
             save_resume()
             update_progress("running", last_input_fraction)
+
+        class _Done:
+            def __init__(self, value): self.value = value
+            def result(self): return self.value
+
+        for index, r1_data, r2_data, first_line, input_fraction in _paired_blocks(
+            sample.r1, sample.r2, records_per_block
+        ):
+            if index < skip_blocks:
+                last_input_fraction = max(last_input_fraction, input_fraction)
+                resume_fraction_known = True
+                update_progress("resuming", last_input_fraction, (index + 1) / skip_blocks)
+                continue
+            task = (
+                index, r1_data, r2_data, first_line, sample.r1, sample.r2, segments,
+                segment_columns, fields, output_writer.path / f"part-{index:08d}.parquet",
+                compression, compression_level,
+            )
+            future = _Done(_extract_block(task)) if executor is None else executor.submit(_extract_block, task)
+            in_flight.append((future, input_fraction))
+            while in_flight and (len(in_flight) >= window or (hasattr(in_flight[0][0], "done") and in_flight[0][0].done())):
+                commit(*in_flight.popleft())
+        while in_flight:
+            commit(*in_flight.popleft())
+        if preview_writer is not None and totals["total_reads"]:
+            preview_writer.writerows(islice(open_records(parquet_output), config.extraction_preview_reads))
+            preview_handle.flush()
         output_writer.close()
         save_resume()
         update_progress("completed", 1.0)

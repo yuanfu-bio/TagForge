@@ -163,7 +163,11 @@ def _dedup_batch(batch: list, method: str, max_distance: int):
     input_reads = 0
     raw_umis = 0
     for group_key, umi_counts in batch:
-        assignments = _assign_umis(umi_counts, clusterer, max_distance)
+        if len(umi_counts) == 1:
+            # A lone UMI is its own cluster; skip the UMI-tools call.
+            assignments = {next(iter(umi_counts)): next(iter(umi_counts))}
+        else:
+            assignments = _assign_umis(umi_counts, clusterer, max_distance)
         merged = defaultdict(lambda: [0, 0])
         for raw_umi, n in umi_counts.items():
             input_reads += n
@@ -383,7 +387,209 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
             executor.shutdown(wait=True, cancel_futures=True)
         shutil.rmtree(sort_dir, ignore_errors=True)
 
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _bucket_dedup_worker(task):
+    """Cluster every UMI scope of one hash bucket and commit its Parquet fragment."""
+    (bucket_glob, output, fields, method, max_distance, batch_umis, max_group_umis,
+     max_component_umis, compression, compression_level) = task
+    import duckdb
+    from .columnar import write_parquet_columns
+    connection = duckdb.connect()
+    try:
+        connection.execute("PRAGMA threads=1")
+        cursor = connection.execute(
+            "SELECT b1, b2, umi, n FROM read_parquet(?) ORDER BY b1, b2, umi", [bucket_glob])
+        raw_umis = components = groups = 0
+        group_stats = {"peak_group_umis": 0, "peak_component_umis": 0}
+        last_key = [None]
+
+        def counted():
+            for row in cursor.fetchall():
+                key = (row[0], row[1])
+                if key != last_key[0]:
+                    nonlocal_groups[0] += 1
+                    last_key[0] = key
+                yield row
+
+        nonlocal_groups = [0]
+        rows = []
+        peak_batch = 0
+        for batch in _group_batches(
+            counted(), batch_umis, max_distance, max_group_umis=max_group_umis,
+            max_component_umis=max_component_umis, stats=group_stats,
+        ):
+            peak_batch = max(peak_batch, sum(len(group) for _, group in batch))
+            batch_rows, batch_components, _reads, batch_raw = _dedup_batch(batch, method, max_distance)
+            rows.extend(batch_rows)
+            components += batch_components
+            raw_umis += batch_raw
+        groups = nonlocal_groups[0]
+        columns = {field: [row[index] for row in rows] for index, field in enumerate(fields)}
+        write_parquet_columns(Path(output), columns, fields, compression_level=compression_level,
+                              compression=compression)
+        return len(rows), components, raw_umis, groups, peak_batch, group_stats
+    finally:
+        connection.close()
+
+
+def _dedup_sample_duckdb(config: TagForgeConfig, sample_name: str):
+    """DuckDB aggregation into hash buckets, then bucket-parallel UMI clustering.
+
+    Every (barcode1, feature) scope is hashed into exactly one bucket, so workers
+    cluster independent scopes and write their own fragments; the coordinating
+    process only schedules buckets and sums counters.
+    """
+    import duckdb
+    from .columnar import parquet_files, write_parquet_columns, _pa
+    dirs = sample_dirs(config.output_dir, sample_name)
+    logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
+    source = resolve_table(dirs["corrected"] / f"{sample_name}.valid_reads.parquet",
+                           dirs["corrected"] / f"{sample_name}.valid_reads.tsv.gz")
+    parquet_output = dirs["detail"] / f"{sample_name}.molecule_detail.parquet"
+    progress_path = dirs["logs"] / f"{sample_name}.progress.json"
+    started = time.monotonic()
+    requested_workers = config.umi_workers or config.threads
+    workers = max(1, requested_workers)
+    b1_col, b2_col, umi_col = (config.target_name("barcode1"),
+        f"{config.target_name('barcode2')}_name", config.target_name("umi"))
+    fields = molecule_fields(config)
+    scratch = Path(tempfile.mkdtemp(prefix=".umi-duckdb.", dir=dirs["detail"]))
+    progress_throttle = ProgressThrottle()
+    reads = total_raw_umis = total_groups = molecules = components = raw_umis_processed = 0
+    buckets_done = 0
+    peak_batch_umis = 0
+    group_stats = {"peak_group_umis": 0, "peak_component_umis": 0}
+    bucket_count = max(64, workers * 4)
+    compression = getattr(config, "parquet_compression", "snappy")
+    compression_level = getattr(config, "compression_level", 3)
+
+    def progress(status: str):
+        row = {"status": status, "valid_reads": reads, "groups": total_groups, "total_groups": total_groups,
+               "components": components, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis,
+               "molecules": molecules, "batches_submitted": bucket_count, "batches_completed": buckets_done,
+               "requested_workers": requested_workers, "workers": workers,
+               "aggregation_records": total_raw_umis, "elapsed_seconds": f"{time.monotonic() - started:.2f}"}
+        if progress_throttle.allow(status):
+            row.update(group_stats)
+            write_progress(progress_path, sample_name, "dedup", row)
+            logger.info("dedup_progress\tstatus=%s\tvalid_reads=%s\tgroups=%s\ttotal_groups=%s\traw_umis=%s\t"
+                        "total_raw_umis=%s\tmolecules=%s\tbatches_completed=%s\taggregation_records=%s\telapsed_seconds=%s",
+                        status, reads, components, total_groups, raw_umis_processed, total_raw_umis,
+                        molecules, buckets_done, total_raw_umis, row["elapsed_seconds"])
+
+    executor = None
+    try:
+        progress("aggregating")
+        if parquet_output.exists():
+            shutil.rmtree(parquet_output) if parquet_output.is_dir() else parquet_output.unlink()
+        parquet_output.mkdir(parents=True)
+        if not (source.is_dir() or source.suffix == ".parquet"):
+            raise ConfigError("duckdb UMI aggregation requires a Parquet valid-reads table; "
+                              "use performance.umi_aggregation_backend: external_sort for legacy TSV input")
+        files = [str(path) for path in parquet_files(source)]
+        _, pq = _pa()
+        reads = sum(pq.ParquetFile(path).metadata.num_rows for path in files)
+        aggregated = scratch / "aggregated"
+        connection = duckdb.connect()
+        try:
+            connection.execute(f"PRAGMA threads={max(1, config.threads)}")
+            connection.execute(f"PRAGMA memory_limit='{config.umi_duckdb_memory_mb}MB'")
+            connection.execute("PRAGMA temp_directory=?", [str(scratch / "spill")])
+            connection.execute("PRAGMA preserve_insertion_order=false")
+            quoted = {name: _quote_ident(name) for name in (b1_col, b2_col, umi_col)}
+            logger.info("dedup_aggregation_start\tbackend=duckdb\tthreads=%s\tmemory_mb=%s\tbuckets=%s\ttmp_dir=%s",
+                        config.threads, config.umi_duckdb_memory_mb, bucket_count, scratch)
+            connection.execute(
+                f"COPY (SELECT (hash({quoted[b1_col]}, {quoted[b2_col]}) % {bucket_count})::INTEGER AS bucket, "
+                f"{quoted[b1_col]} AS b1, {quoted[b2_col]} AS b2, {quoted[umi_col]} AS umi, count(*)::BIGINT AS n "
+                f"FROM read_parquet(?) GROUP BY ALL) TO '{str(aggregated).replace(chr(39), chr(39) * 2)}' "
+                f"(FORMAT parquet, PARTITION_BY (bucket), COMPRESSION zstd)",
+                [files])
+        finally:
+            connection.close()
+        bucket_dirs = sorted(aggregated.glob("bucket=*"), key=lambda path: int(path.name.split("=")[1]))
+        for bucket_dir in bucket_dirs:
+            total_raw_umis += sum(pq.ParquetFile(path).metadata.num_rows for path in bucket_dir.glob("*.parquet"))
+        aggregation_seconds = time.monotonic() - started
+        logger.info("dedup_aggregation_complete\tbackend=duckdb\treads=%s\tunique_raw_umis=%s\tseconds=%.3f",
+                    reads, total_raw_umis, aggregation_seconds)
+        progress("aggregated")
+        clustering_started = time.monotonic()
+        tasks = [
+            (str(bucket_dir / "*.parquet"),
+             str(parquet_output / f"part-{int(bucket_dir.name.split('=')[1]):08d}.parquet"),
+             fields, config.umi_method, config.umi_max_distance, config.umi_batch_size,
+             config.umi_max_group_umis, config.umi_max_component_umis, compression, compression_level)
+            for bucket_dir in bucket_dirs
+        ]
+        logger.info("dedup_parallel_start\tbackend=umi_tools-UMIClusterer\trequested_workers=%s\tworkers=%s\t"
+                    "buckets=%s\treads=%s\ttotal_raw_umis=%s\taggregation_seconds=%.3f",
+                    requested_workers, workers, len(tasks), reads, total_raw_umis, aggregation_seconds)
+
+        def consume(result):
+            nonlocal molecules, components, raw_umis_processed, total_groups, buckets_done, peak_batch_umis
+            rows, bucket_components, bucket_raw, bucket_groups, bucket_peak, bucket_stats = result
+            molecules += rows
+            components += bucket_components
+            raw_umis_processed += bucket_raw
+            total_groups += bucket_groups
+            peak_batch_umis = max(peak_batch_umis, bucket_peak)
+            for key, value in bucket_stats.items():
+                group_stats[key] = max(group_stats[key], value)
+            buckets_done += 1
+            progress("running")
+
+        if workers == 1 or len(tasks) <= 1:
+            for task in tasks:
+                consume(_bucket_dedup_worker(task))
+        else:
+            executor = ProcessPoolExecutor(max_workers=workers)
+            pending = deque()
+            for task in tasks:
+                pending.append(executor.submit(_bucket_dedup_worker, task))
+                if len(pending) >= workers * 2:
+                    consume(pending.popleft().result())
+            while pending:
+                consume(pending.popleft().result())
+        if not any(parquet_output.glob("*.parquet")):
+            write_parquet_columns(parquet_output / "part-00000000.parquet", {field: [] for field in fields},
+                                  fields, compression_level=compression_level, compression=compression)
+        clustering_seconds = time.monotonic() - clustering_started
+        progress("completed")
+        logger.info("dedup_umi_scope\tpeak_group_umis=%s\tpeak_component_umis=%s\tpeak_batch_umis=%s",
+                    group_stats["peak_group_umis"], group_stats["peak_component_umis"], peak_batch_umis)
+        if config.pi_seq_enabled:
+            pi_stats = filter_pi_seq_molecules(config, sample_name, parquet_output)
+            logger.info("pi_seq_summary\ttotal_fb_umis=%s\tmulti_pi_ratio=%s\tmp_ratio=%s",
+                        pi_stats["total_fb_umis"], pi_stats["multi_pi_ratio"], pi_stats["mp_ratio"])
+        return parquet_output, {
+            "valid_reads": reads, "molecules": molecules, "duplicates": reads - molecules,
+            "groups": total_groups, "total_groups": total_groups, "components": components,
+            "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis,
+            "requested_workers": requested_workers, "workers": workers,
+            "requested_aggregation_workers": config.threads, "aggregation_workers": config.threads,
+            "batches_submitted": len(tasks), "batches_completed": buckets_done,
+            "umi_batch_size": config.umi_batch_size, "peak_batch_umis": peak_batch_umis, **group_stats,
+            "aggregation_backend": "duckdb", "duckdb_memory_mb": config.umi_duckdb_memory_mb,
+            "aggregation_seconds": aggregation_seconds, "clustering_seconds": clustering_seconds,
+            "wall_seconds": time.monotonic() - started,
+        }
+    except Exception:
+        progress("failed")
+        raise
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def dedup_sample(config: TagForgeConfig, sample_name: str):
+    if config.umi_aggregation_backend == "duckdb":
+        return _dedup_sample_duckdb(config, sample_name)
     if config.umi_aggregation_backend == "external_sort":
         return _dedup_sample_external_sort(config, sample_name)
     dirs = sample_dirs(config.output_dir, sample_name)

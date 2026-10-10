@@ -86,8 +86,9 @@ class TagForgeConfig:
     barcode_workers: Optional[int] = None
     downsample_workers: Optional[int] = None
     umi_aggregation_workers: Optional[int] = None
-    umi_aggregation_backend: str = "external_sort"
+    umi_aggregation_backend: str = "duckdb"
     umi_sort_memory_mb: int = 512
+    umi_duckdb_memory_mb: int = 65536
     umi_workers: Optional[int] = None
     umi_batch_size: int = 5000
     umi_max_group_umis: Optional[int] = None
@@ -181,7 +182,7 @@ def _validate_config_keys(raw):
         "downsample": {"enabled", "ratios", "random_seed"},
         "quick_test": {"enabled", "reads", "min_valid_rate", "max_n_base_rate"},
         "performance": {"threads", "barcode_workers", "downsample_workers", "umi_aggregation_workers",
-                        "umi_aggregation_backend", "umi_sort_memory_mb", "umi_workers", "umi_batch_size",
+                        "umi_aggregation_backend", "umi_sort_memory_mb", "umi_duckdb_memory_mb", "umi_workers", "umi_batch_size",
                         "umi_max_group_umis", "umi_max_component_umis",
                         "umi_sqlite_cache_mb", "chunk_size", "extraction_preview_reads", "compression_level", "parquet_compression", "matrix_memory_mb"},
         "resume": {"enabled", "overwrite", "input_fingerprint"},
@@ -675,8 +676,9 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         _integer(umi_aggregation_workers_value, "performance.umi_aggregation_workers")
         if umi_aggregation_workers_value is not None else None
     )
-    umi_aggregation_backend = str(perf.get("umi_aggregation_backend", "external_sort")).replace("-", "_")
+    umi_aggregation_backend = str(perf.get("umi_aggregation_backend", "duckdb")).replace("-", "_")
     umi_sort_memory_mb = _integer(perf.get("umi_sort_memory_mb", 512), "performance.umi_sort_memory_mb")
+    umi_duckdb_memory_mb = _integer(perf.get("umi_duckdb_memory_mb", 65536), "performance.umi_duckdb_memory_mb")
     umi_workers_value = perf.get("umi_workers")
     umi_workers = _integer(umi_workers_value, "performance.umi_workers") if umi_workers_value is not None else None
     umi_batch_size = _integer(perf.get("umi_batch_size", 5000), "performance.umi_batch_size")
@@ -693,8 +695,10 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         raise ConfigError("performance.downsample_workers must be >= 1")
     if umi_aggregation_workers is not None and umi_aggregation_workers < 1:
         raise ConfigError("performance.umi_aggregation_workers must be >= 1")
-    if umi_aggregation_backend not in {"external_sort", "sqlite"}:
-        raise ConfigError("performance.umi_aggregation_backend must be external_sort or sqlite")
+    if umi_aggregation_backend not in {"duckdb", "external_sort", "sqlite"}:
+        raise ConfigError("performance.umi_aggregation_backend must be duckdb, external_sort or sqlite")
+    if umi_duckdb_memory_mb < 256:
+        raise ConfigError("performance.umi_duckdb_memory_mb must be >= 256")
     if umi_sort_memory_mb < 1:
         raise ConfigError("performance.umi_sort_memory_mb must be >= 1")
     if umi_workers is not None and umi_workers < 1:
@@ -747,6 +751,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
         threads=threads, barcode_workers=barcode_workers, downsample_workers=downsample_workers,
         umi_aggregation_workers=umi_aggregation_workers,
         umi_aggregation_backend=umi_aggregation_backend, umi_sort_memory_mb=umi_sort_memory_mb,
+        umi_duckdb_memory_mb=umi_duckdb_memory_mb,
         umi_workers=umi_workers, umi_batch_size=umi_batch_size,
         **umi_budgets,
         umi_sqlite_cache_mb=umi_sqlite_cache_mb, matrix_memory_mb=matrix_memory_mb,

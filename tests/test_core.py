@@ -485,7 +485,7 @@ umi:
             self.assertEqual(config.umi_method, "adjacency")
             self.assertEqual(config.umi_max_distance, 2)
             self.assertEqual(config.umi_aggregation_workers, 3)
-            self.assertEqual(config.umi_aggregation_backend, "external_sort")
+            self.assertEqual(config.umi_aggregation_backend, "duckdb")
             self.assertEqual(config.umi_sort_memory_mb, 512)
 
     def test_config_accepts_legacy_segments(self):
