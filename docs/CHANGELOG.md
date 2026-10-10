@@ -6,6 +6,9 @@ use the version declared in `tagforge.__version__`.
 
 ## Unreleased
 
+- Run PB–CB `pair-map` aggregation in DuckDB instead of row-wise SQLite upserts;
+  output tables are unchanged.
+
 - Raise the default `performance.matrix_memory_mb` from 512 to 16384: with many threads the
   old limit made DuckDB fail with out-of-memory on large PI-seq samples.
 

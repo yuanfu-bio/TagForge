@@ -3,7 +3,9 @@ from __future__ import annotations
 import csv
 import gzip
 import json
+import shutil
 import sqlite3
+import tempfile
 from pathlib import Path
 
 from .columnar import open_records, resolve_table
@@ -106,42 +108,39 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
     cb_counts_output = dirs["matrix"] / f"{sample_name}.cb_pb_counts.tsv.gz"
     distribution_output = dirs["matrix"] / f"{sample_name}.cb_pb_count_distribution.tsv"
     correction_output = dirs["matrix"] / f"{sample_name}.cb_observed_correction.tsv.gz"
-    db = Path(str(output) + ".sqlite3.tmp")
-    db.unlink(missing_ok=True)
     pb_column = config.target_name("barcode1")
     cb_column = f"{config.target_name('barcode2')}_name"
+    import duckdb
+    import pyarrow as pa
+    from .columnar import sql_reader
+    quote = lambda name: '"' + name.replace('"', '""') + '"'
+    scratch = Path(tempfile.mkdtemp(prefix=".pair-map.", dir=dirs["matrix"]))
     try:
-        con = sqlite3.connect(db)
+        con = duckdb.connect()
         try:
+            con.execute(f"PRAGMA threads={max(1, getattr(config, 'threads', 1))}")
+            con.execute(f"PRAGMA memory_limit='{int(getattr(config, 'matrix_memory_mb', 16384))}MB'")
+            con.execute("PRAGMA temp_directory=?", [str(scratch / "spill")])
+            con.execute("PRAGMA preserve_insertion_order=false")
             con.execute(
-                "CREATE TABLE molecules (pb TEXT, cb TEXT, umi TEXT, reads_count INTEGER, "
-                "PRIMARY KEY(pb, cb, umi)) WITHOUT ROWID"
-            )
-            batch = []
-            for row in open_records(source):
-                batch.append((row[pb_column], row[cb_column], row["corrected_umi"], int(row["reads_count"])))
-                if len(batch) >= 100000:
-                    con.executemany(
-                        "INSERT INTO molecules VALUES (?, ?, ?, ?) "
-                        "ON CONFLICT(pb, cb, umi) DO UPDATE SET "
-                        "reads_count=reads_count+excluded.reads_count", batch
-                    )
-                    con.commit(); batch.clear()
-            if batch:
-                con.executemany(
-                    "INSERT INTO molecules VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(pb, cb, umi) DO UPDATE SET "
-                    "reads_count=reads_count+excluded.reads_count", batch
-                )
-                con.commit()
-            con.execute("CREATE TEMP TABLE mapping AS SELECT pb, cb, COUNT(*) AS molecule_count, "
-                        "SUM(reads_count) AS reads_count FROM molecules GROUP BY pb, cb")
+                f"CREATE TEMP TABLE molecules AS SELECT {quote(pb_column)} AS pb, {quote(cb_column)} AS cb, "
+                f"corrected_umi AS umi, SUM(reads_count::BIGINT)::BIGINT AS reads_count "
+                f"FROM {sql_reader(source)} GROUP BY 1, 2, 3")
+            con.execute("CREATE TEMP TABLE mapping AS SELECT pb, cb, COUNT(*)::BIGINT AS molecule_count, "
+                        "SUM(reads_count)::BIGINT AS reads_count FROM molecules GROUP BY pb, cb")
+
+            def rows(query, *params):
+                cursor = con.execute(query, list(params))
+                while True:
+                    chunk = cursor.fetchmany(100000)
+                    if not chunk:
+                        return
+                    yield from chunk
+
             with atomic_text(output, config.compression_level) as handle:
                 writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
                 writer.writerow([pb_column, config.target_name("barcode2"), "molecule_count", "reads_count"])
-                writer.writerows(con.execute(
-                    "SELECT pb, cb, molecule_count, reads_count FROM mapping ORDER BY pb, cb"
-                ))
+                writer.writerows(rows("SELECT pb, cb, molecule_count, reads_count FROM mapping ORDER BY pb, cb"))
             if not getattr(config, "pb_cb_enabled", False):
                 return output
 
@@ -149,7 +148,8 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
             aliases = []
             if bool(pb_cb_config.get("observed_correction", True)):
                 aliases = _observed_cb_aliases(
-                    con.execute("SELECT cb, SUM(reads_count) FROM mapping GROUP BY cb").fetchall(),
+                    [(cb, int(reads)) for cb, reads in con.execute(
+                        "SELECT cb, SUM(reads_count) FROM mapping GROUP BY cb ORDER BY cb").fetchall()],
                     int(pb_cb_config.get("min_parent_reads", 5)),
                     float(pb_cb_config.get("parent_child_ratio", 10)),
                 )
@@ -157,15 +157,14 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
                 writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
                 writer.writerow(["raw_cb", "corrected_cb", "raw_reads_count", "parent_reads_count", "correction_type"])
                 writer.writerows(aliases)
-            con.execute("CREATE TEMP TABLE cb_alias (raw_cb TEXT PRIMARY KEY, corrected_cb TEXT NOT NULL) WITHOUT ROWID")
-            con.executemany("INSERT INTO cb_alias VALUES (?, ?)", [(row[0], row[1]) for row in aliases])
-            con.execute(
-                "CREATE TEMP TABLE resolved_mapping (pb TEXT, cb TEXT, molecule_count INTEGER, reads_count INTEGER, "
-                "PRIMARY KEY(pb, cb)) WITHOUT ROWID"
-            )
+            alias_table = pa.table({
+                "raw_cb": pa.array([row[0] for row in aliases], type=pa.string()),
+                "corrected_cb": pa.array([row[1] for row in aliases], type=pa.string())})
+            con.register("cb_alias_arrow", alias_table)
+            con.execute("CREATE TEMP TABLE cb_alias AS SELECT * FROM cb_alias_arrow")
             con.execute("""
-                INSERT INTO resolved_mapping
-                SELECT pb, cb, COUNT(*), SUM(reads_count) FROM (
+                CREATE TEMP TABLE resolved_mapping AS
+                SELECT pb, cb, COUNT(*)::BIGINT AS molecule_count, SUM(reads_count)::BIGINT AS reads_count FROM (
                     SELECT molecules.pb, COALESCE(cb_alias.corrected_cb, molecules.cb) AS cb,
                            molecules.umi, SUM(molecules.reads_count) AS reads_count
                     FROM molecules LEFT JOIN cb_alias ON molecules.cb = cb_alias.raw_cb
@@ -181,14 +180,15 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
                            SUM(reads_count) OVER (PARTITION BY pb) AS total_reads_count,
                            ROW_NUMBER() OVER (
                                PARTITION BY pb ORDER BY reads_count DESC, cb ASC
-                           ) AS rank
+                           ) AS rn
                     FROM resolved_mapping
                 )
                 SELECT pb, cb, molecule_count, reads_count, total_molecule_count,
-                       total_reads_count, CAST(reads_count AS REAL) / total_reads_count AS dominant_ratio
-                FROM ranked WHERE rank = 1
+                       total_reads_count, CAST(reads_count AS DOUBLE) / total_reads_count AS dominant_ratio
+                FROM ranked WHERE rn = 1 ORDER BY pb
             """
-            selected = list(con.execute(ranked))
+            selected = [tuple(int(v) if i in (2, 3, 4, 5) else v for i, v in enumerate(row))
+                        for row in con.execute(ranked).fetchall()]
             retained = [row for row in selected if row[6] > threshold]
             with atomic_text(map_output, config.compression_level) as handle:
                 writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
@@ -197,10 +197,10 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
                     "total_molecule_count", "total_reads_count", "dominant_ratio",
                 ])
                 writer.writerows(retained)
-            con.execute(
-                "CREATE TEMP TABLE retained_mapping (pb TEXT PRIMARY KEY, cb TEXT NOT NULL) WITHOUT ROWID"
-            )
-            con.executemany("INSERT INTO retained_mapping VALUES (?, ?)", [(row[0], row[1]) for row in retained])
+            con.register("retained_arrow", pa.table({
+                "pb": pa.array([row[0] for row in retained], type=pa.string()),
+                "cb": pa.array([row[1] for row in retained], type=pa.string())}))
+            con.execute("CREATE TEMP TABLE retained_mapping AS SELECT * FROM retained_arrow")
             cb_counts = con.execute("""
                 SELECT cb, COUNT(*) AS pb_count
                 FROM retained_mapping GROUP BY cb ORDER BY cb
@@ -235,4 +235,4 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
         finally:
             con.close()
     finally:
-        db.unlink(missing_ok=True)
+        shutil.rmtree(scratch, ignore_errors=True)
