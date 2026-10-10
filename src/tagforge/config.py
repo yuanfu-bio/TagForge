@@ -94,7 +94,7 @@ class TagForgeConfig:
     umi_max_group_umis: Optional[int] = None
     umi_max_component_umis: Optional[int] = None
     umi_sqlite_cache_mb: int = 64
-    matrix_memory_mb: int = 512
+    matrix_memory_mb: int = 16384
     pi_seq_enabled: bool = False
     pi_seq_dominance_threshold: float = 0.8
     pb_cb_enabled: bool = False
@@ -732,7 +732,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
     parquet_compression = validate_parquet_compression(perf.get("parquet_compression", "snappy"))
     if "observed_correction" in pb_cb:
         pb_cb["observed_correction"] = _as_bool(pb_cb["observed_correction"])
-    matrix_memory_mb = _integer(perf.get("matrix_memory_mb", 512), "performance.matrix_memory_mb")
+    matrix_memory_mb = _integer(perf.get("matrix_memory_mb", 16384), "performance.matrix_memory_mb")
     if matrix_memory_mb < 32:
         raise ConfigError("performance.matrix_memory_mb must be >= 32")
     config = TagForgeConfig(

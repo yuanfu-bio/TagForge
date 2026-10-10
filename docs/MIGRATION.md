@@ -144,7 +144,7 @@ native binomial sampler and the older fallback can give different draws.
 ## Resource settings and linker policy
 
 DuckDB matrix operations use `performance.threads`,
-`performance.matrix_memory_mb` (default 512, minimum 32) and local scratch.
+`performance.matrix_memory_mb` (default 16384, minimum 32) and local scratch.
 UMI batch size is a target, not a hard cap on a connected component or full
 barcode–feature group. Optional `performance.umi_max_group_umis` and
 `umi_max_component_umis` budgets stop with a specific barcode/feature;

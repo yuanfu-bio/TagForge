@@ -6,6 +6,9 @@ use the version declared in `tagforge.__version__`.
 
 ## Unreleased
 
+- Raise the default `performance.matrix_memory_mb` from 512 to 16384: with many threads the
+  old limit made DuckDB fail with out-of-memory on large PI-seq samples.
+
 - Parallelise `extract`: the coordinator only reads raw FASTQ blocks; workers
   parse, extract, aggregate segment statistics and write their own Parquet
   fragments. Exact (`linker.max_mismatch: 0`) linker search uses `str.find`.
