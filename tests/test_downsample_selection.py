@@ -13,7 +13,7 @@ class DownsampleSelectionTests(unittest.TestCase):
     def rows(self):
         return [{"sample": "sample", "downsample_ratio": ratio,
                  "reads_sampled": 20, "umi_types": 10, "umi_detected_once": singles,
-                 "sequencing_saturation": 50, "duplication_ratio": 50,
+                 "sequencing_saturation": 50,
                  "non_singleton_molecule_fraction": fraction}
                 for ratio, singles, fraction in ((0.1, 5, 50), (0.5, 3, 70))]
 
@@ -60,8 +60,19 @@ class DownsampleSelectionTests(unittest.TestCase):
         payload = json.loads(re.search(r"const data = (.*);", html).group(1))
         self.assertEqual(payload["non_singleton"], [50, 70])
         self.assertNotIn("sd", payload)
-        self.assertIn("Each ratio is sampled once", html)
-        self.assertIn("does not establish recommended sequencing depth", html)
+        self.assertEqual(payload["sample"], "sample")
+        self.assertIn("sample<br>Saturation: 50.00%<br>Non-singleton molecule fraction: 70.00%", html)
+        self.assertEqual(payload["umi_types"], [10, 10])
+        self.assertEqual(payload["singletons"], [5, 3])
+        self.assertNotIn("<h1", html)
+        self.assertNotIn("<p", html)
+        self.assertIn("family:'Arial'", html)
+        self.assertIn("name:'Saturation'", html)
+        self.assertIn("name:'Non-singleton molecule fraction'", html)
+        self.assertIn("yaxis:'y3'", html)
+        self.assertIn("yaxis:'y2'", html)
+        self.assertIn("domain:[0.04,0.48]", html)
+        self.assertIn("domain:[0.56,1],range:[0,100]", html)
         self.assertNotIn("error_y", html)
 
 

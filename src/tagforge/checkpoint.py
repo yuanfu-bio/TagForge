@@ -22,8 +22,8 @@ MANIFEST_SCHEMA = 1
 # Bump only the affected stage when its counting logic or output contract changes.
 STAGE_VERSIONS = {step: 1 for step in (
     "extract", "correct", "dedup", "matrix", "pair-map", "downsample", "report")}
-STAGE_VERSIONS.update(extract=2, correct=4, dedup=3, downsample=5, matrix=2, report=4, **{"pair-map": 3})
-STAGE_VERSIONS["report"] = 6
+STAGE_VERSIONS.update(extract=2, correct=4, dedup=3, downsample=10, matrix=2, report=4, **{"pair-map": 3})
+STAGE_VERSIONS["report"] = 7
 STAGE_NUMBERS = {"extract": "01", "correct": "02", "dedup": "03", "matrix": "04",
                  "pair-map": "04", "downsample": "05", "report": "06"}
 

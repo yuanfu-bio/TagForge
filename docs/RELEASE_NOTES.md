@@ -33,8 +33,9 @@ publishing, uploading and tagging are separate actions.
   by default; only explicitly configured thresholds block the workflow.
 - Unknown, invalid and inapplicable configuration fields are rejected. Disabled
   downsampling uses full-depth reports; disabled resume recomputes all stages.
-- `duplication_ratio` and `sequencing_saturation` use read support as their
-  denominator and percent units. Quick-test duplication has changed from the
+- Downsample `sequencing_saturation` uses read support as its denominator and
+  percent units; the redundant downsample `duplication_ratio` is removed.
+  Quick-test duplication has changed from the
   previous 0–1 unit to 0–100; its other QC rates and thresholds stay in 0–1.
 - Downsampling samples each ratio once and selects by the observed
   non-singleton fraction, preferring the lower ratio on ties. Observed metrics
@@ -65,7 +66,7 @@ HTML reports link each library’s main full-depth result; Excel reports add a
 `Results` sheet listing the paths. Standard libraries use raw molecule pairs,
 PI-seq uses PI-filtered molecule details and PB–CB uses the dominant mapping.
 
-HTML and Excel show mean/SD curves and explicit metric definitions. Workbook
+HTML and Excel show single-sample curves and explicit metric definitions. Workbook
 styles, freeze panes and sheet-name collisions are corrected. The installed
 wheel can generate a standalone public synthetic project with `init-example`.
 Real FASTQ and local experiment outputs are excluded from release distributions.

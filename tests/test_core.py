@@ -363,6 +363,11 @@ umi:
            (config.output_dir / sample / "00_logs/checkpoints/downsample.done").is_file())
     @patch("tagforge.reports.selected_summary_path", side_effect=lambda config, sample:
            config.output_dir / sample / "04_matrix" / f"{sample}.raw_matrix_summary.json")
+    @patch("tagforge.reports.selection_point", side_effect=lambda config, sample:
+           {"sample": sample, "optimal_downsample_ratio": 0.5,
+            "max_non_singleton_molecule_fraction": 60, "reads_sampled": 50,
+            "umi_types": 20, "umi_detected_once": 8,
+            "sequencing_saturation": 60})
     def test_summary_rebuilds_completed_samples_in_config_order(self, *_mocks):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "02_output"
@@ -373,9 +378,9 @@ umi:
                 stats = base / "02_corrected" / f"{sample}.barcode_correction_stats.tsv"
                 stats.parent.mkdir(parents=True)
                 stats.write_text("scope\ttotal_reads\tvalid_rate\nCELL\t100\t0.9\nFB\t100\t0.8\ncombined\t100\t0.7\n", encoding="utf-8")
-                point = base / "05_downsample" / f"{sample}.optimal_saturation_point.tsv"
+                point = base / "05_downsample" / f"{sample}.selection.json"
                 point.parent.mkdir(parents=True)
-                point.write_text("sample\toptimal_downsample_ratio\tmax_non_singleton_molecule_fraction\treads_sampled\tumi_types\tumi_detected_once\tsequencing_saturation\tduplication_ratio\n" + f"{sample}\t0.5\t60\t50\t20\t8\t30\t30\n", encoding="utf-8")
+                point.write_text(json.dumps({"schema": 2, "sample": sample}), encoding="utf-8")
                 summary = base / "04_matrix" / f"{sample}.raw_matrix_summary.json"
                 summary.parent.mkdir(parents=True)
                 summary.write_text(json.dumps({"barcode_count": 1, "feature_counts": {feature: 1}, "pi_seq": {}}), encoding="utf-8")
@@ -393,7 +398,7 @@ umi:
                 meta = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
                 count = workbook.read("xl/worksheets/sheet2.xml").decode("utf-8")
             self.assertLess(meta.index("alpha"), meta.index("zeta"))
-            self.assertIn("CELL Valid rate", meta)
+            self.assertIn("CELL valid", meta)
             self.assertIn("A_feature", count)
             self.assertIn("Z_feature", count)
 

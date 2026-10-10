@@ -128,8 +128,14 @@ class WorkflowTests(unittest.TestCase):
                     links = re.findall(r'href="([^"]+)"', page)
                     primary = [report.parent / unquote(link) for link in links
                                if Path(unquote(link)).name == filename]
-                    self.assertEqual(len(primary), 1)
-                    self.assertTrue(primary[0].exists())
+                    if report.name == "TagForge_batch_report.html":
+                        self.assertEqual(primary, [])
+                        self.assertNotIn("Main results", page)
+                        self.assertNotIn("Downsample not run.", page)
+                        self.assertNotIn("Not run. Counts use full-depth molecules.", page)
+                    else:
+                        self.assertEqual(len(primary), 1)
+                        self.assertTrue(primary[0].exists())
                 rows = workbook_tables(root / "06_report/example.report.xlsx")["Results"]
                 self.assertEqual(rows[1][1], library)
                 self.assertEqual(Path(rows[1][2]).name, filename)
@@ -259,7 +265,8 @@ class WorkflowTests(unittest.TestCase):
         next(detail.glob("*.parquet")).unlink()
         _, samples = write_summary(self.config)
         self.assertEqual(samples, ["full"])
-        self.assertNotIn("Counts_final", workbook_tables(output))
+        tables = workbook_tables(output)
+        self.assertEqual(tables["Counts_final"], tables["Counts_raw"])
 
     def test_summary_command_updates_same_workbook_and_retires_duplicate_files(self):
         from tagforge.cli import main
@@ -276,7 +283,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse((directory / "00_summary.xlsx").exists())
         self.assertFalse((directory / "01_FB_not_in_anno.xlsx").exists())
         tables = workbook_tables(directory / "TagForge_batch_report.xlsx")
-        self.assertNotIn("Counts_final", tables)
+        self.assertEqual(tables["Counts_final"], tables["Counts_raw"])
         self.assertEqual(tables["Downsample"][1][1:3], ["not run", ""])
         self.assertEqual(sum(int(value) for value in tables["Counts_raw"][1][1:]), 6)
 

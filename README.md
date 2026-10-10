@@ -137,8 +137,11 @@ Each sample has an output directory organized by processing stage:
     └── 06_report/            # sample HTML and Excel reports
 ```
 
-Start with **Main results** in the HTML report or **Results** in the Excel
-workbook. Both point to the primary full-depth output for your library:
+Start with **Main results** in a sample HTML report or **Results** in an Excel
+workbook. Batch HTML reports omit the main-result block and downsample note.
+Standard and PI-seq workbooks always include `Counts_raw` and `Counts_final`; their counts match when the selected ratio is 1 or downsampling
+is disabled. Sample HTML reports and Excel workbooks identify the primary
+full-depth output for your library:
 
 | Library | Primary result, relative to the sample directory |
 | --- | --- |

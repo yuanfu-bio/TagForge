@@ -6,6 +6,34 @@
 
 日常修改和 2.0.0 发布验收均使用 `/data/home/yfu/miniconda3/envs/tagforge/bin/python`（Python 3.11），只运行本次变更相关的检查。暂不执行跨版本验收或创建新的测试环境。`tests/validation/` 保留验证工具和当前索引；12 批历史实验结果移至 [docs/archive/testing](archive/testing/)，三套历史 Python 环境及专用 Conda 缓存已删除。当前真实数据及结果仍在 `tests/fixtures/pi_seq_dev/`。快照内部的原执行路径按 [迁移表](archive/testing/relocation.json) 查找，不改写历史文件内容。详情见 [清理记录](archive/validation/testing-cleanup-20261010.json)。
 
+## 下采样图片宽度减半（2026-10-10）
+
+HTML 图与 PDF 画布从 1000 改为 500 像素宽，高度仍为 540。逐项比对四个样本页面，仅宽度设置变动，曲线、数值标注、Arial 字体及数据均不变。详见 [验收记录](archive/testing/downsample-half-width-20261010-202545/summary.json)。
+
+## 下采样图内添加数值（2026-10-10）
+
+上方面板内标记样本名、全量（ratio = 1）Saturation 和 Non-singleton molecule fraction 百分比，保留两位小数。100-1-N1 分别为 1.82% 和 1.80%。原来的两个面板、四条曲线和全部数据不变；5 项相关测试通过，浏览器确认数字完整显示且字体为 Arial。详见 [验收记录](archive/testing/downsample-numeric-labels-20261010-202408/summary.json) 与 [PDF 预览](archive/testing/downsample-numeric-labels-20261010-202408/100-1-N1.downsample.pdf)。
+
+## 下采样页面保留原来的双图（2026-10-10）
+
+根据最终要求，恢复原图上方 Saturation / Non-singleton molecule fraction 和下方 UMI Types / UMI detected once 两个面板。四条曲线、配色、坐标轴范围、面板位置及高度均与原图一致，只删除图外标题和小字说明，图内加样本名，统一 Arial。5 项相关测试与浏览器检查通过，四样本曲线数据与原图逐项一致，批次工作簿全部单元格不变。详见 [验收记录](archive/testing/two-panel-downsample-figure-20261010-201817/summary.json) 和 [PDF 预览](archive/testing/two-panel-downsample-figure-20261010-201817/100-1-N1.downsample.pdf)。
+
+## 先前单图方案（已由双图方案替代，2026-10-10）
+
+下采样 HTML 只展示一张图，图内标记样本名，保留 Saturation 和 Non-singleton molecule fraction 两条曲线。去掉页面标题与小字说明，统一 Arial，纵轴按数据自动缩放。5 项相关测试通过；浏览器验证实际字体为 Arial、两条曲线与图例完整，并生成 [PDF 预览](archive/testing/single-downsample-figure-20261010-200716/100-1-N1.downsample.pdf)。四样本仅更新下采样和报告，16 个上游清单、全部数值及批次工作簿单元格不变，详见 [验收记录](archive/testing/single-downsample-figure-20261010-200716/summary.json)。
+
+## 下采样指标去重（2026-10-10）
+
+下采样只保留 `sequencing_saturation` 和 `non_singleton_molecule_fraction` 两个比例指标，移除原始指标表、曲线表、选中结果及报告中的重复 `duplication_ratio`。批次 HTML 表头改为 `Sat.` 和 `Non-singleton (%)`，曲线使用 Saturation 名称；`Main results` 和 Downsample 小字说明继续隐藏。
+
+105 项测试通过，四样本仅重算下采样和报告 8 个阶段，16 个上游清单原字节不变。除删除的重复字段外，所有原始指标和曲线数值完全一致；批次 Excel 全部单元格不变，始终含 `Counts_raw` 和 `Counts_final`。9 份 HTML 脚本语法检查通过，旧输出、源码、测试日志和核对摘要见 [验收记录](archive/testing/two-downsample-metrics-20261010-195556/summary.json)。
+
+## 下采样改为单次采样（2026-10-10）
+
+每个比例仅采样一次，移除重复次数配置、重复编号、重复选择规则、均值/标准差和曲线误差线。选择记录使用 schema 2；每个比例的观测指标和解析期望计数分别保留。当前 Python 3.11 环境的 105 项测试通过，包含 CLI 集成运行；9 份更新的 HTML 内嵌脚本语法检查通过，5 份工作簿 XML、Arial 样式和重复字段移除检查通过。
+
+四个真实样本仅重算下采样与报告共 8 个阶段，16 个上游阶段清单保持原字节。各比例的观测计数保持不变，最终比例均为 1。批次工作簿除 `Downsample` 外的工作表全部单元格不变；`Downsample` 从 13 列精简为 10 列。原报告和下采样输出已备份，详见 [验收摘要](archive/testing/single-sampling-20261010-193032/summary.json)。`latest_run.json` 已更新，之前的完整运行记录保留为基线。
+
 ## 最新流程目录与结果入口（2026-10-10）
 
 样本目录按流程统一为 `00_logs/`、`01_extracted/`、`02_corrected/`、`03_molecules/`、`04_matrix/`、`05_downsample/`、`06_report/`。有效 reads 移至纠错目录；阶段清单放在 `00_logs/checkpoints/` 并编号为 `01_extract.manifest.json` 至 `06_report.manifest.json`。HTML 和 Excel 直接标识标准、PI-seq、PB–CB 各自的全深度主结果，不增加重复数据文件。

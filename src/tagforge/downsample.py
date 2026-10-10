@@ -21,7 +21,7 @@ from .selected import write_selection
 
 
 METRIC_FIELDS = ["sample", "downsample_ratio", "reads_sampled", "umi_types", "umi_detected_once",
-                 "duplication_ratio", "sequencing_saturation", "non_singleton_molecule_fraction"]
+                 "sequencing_saturation", "non_singleton_molecule_fraction"]
 
 
 # Forked workers inherit the molecule counts copy-on-write, avoiding repeated
@@ -30,7 +30,8 @@ _WORKER_COUNTS: list[int] | Counter[int] | None = None
 
 
 def _seed(base: int, sample: str, ratio: float) -> int:
-    digest = hashlib.sha256(f"{base}:{sample}:{ratio:.12g}".encode()).digest()
+    # Keep the established single-draw seed stream stable across schema changes.
+    digest = hashlib.sha256(f"{base}:{sample}:{ratio:.12g}:1".encode()).digest()
     return int.from_bytes(digest[:8], "big")
 
 
@@ -47,9 +48,9 @@ def calculate_metrics(supports):
         reads = sum(int(value) * int(multiplicity) for value, multiplicity in supports.items())
         molecules = sum(int(multiplicity) for multiplicity in supports.values())
         singles = int(supports.get(1, 0))
-        duplication = ((reads - molecules) / reads * 100) if reads else 0.0
+        saturation = ((reads - molecules) / reads * 100) if reads else 0.0
         non_singleton_fraction = ((1 - singles / molecules) * 100) if molecules else 0.0
-        return reads, molecules, singles, duplication, non_singleton_fraction
+        return reads, molecules, singles, saturation, non_singleton_fraction
     reads = 0
     molecules = 0
     singles = 0
@@ -61,13 +62,13 @@ def calculate_metrics(supports):
         molecules += 1
         if count == 1:
             singles += 1
-    duplication = ((reads - molecules) / reads * 100) if reads else 0.0
+    saturation = ((reads - molecules) / reads * 100) if reads else 0.0
     non_singleton_fraction = ((1 - singles / molecules) * 100) if molecules else 0.0
-    return reads, molecules, singles, duplication, non_singleton_fraction
+    return reads, molecules, singles, saturation, non_singleton_fraction
 
 
 CURVE_METRICS = ("reads_sampled", "umi_types", "umi_detected_once", "sequencing_saturation",
-                 "duplication_ratio", "non_singleton_molecule_fraction")
+                 "non_singleton_molecule_fraction")
 SAMPLING_NOTE = (
     "Each ratio is sampled once using a reproducible random seed. "
     "Reads are sampled from fixed full-depth corrected molecule groups; UMI correction and library filtering are not rerun. "
@@ -150,9 +151,9 @@ def _sample_metrics(counts: list[int], ratio: float, sample_name: str, seed: int
             reads += sampled
             molecules += 1
             singles += 1 if sampled == 1 else 0
-    duplication = ((reads - molecules) / reads * 100) if reads else 0.0
+    saturation = ((reads - molecules) / reads * 100) if reads else 0.0
     non_singleton_fraction = ((1 - singles / molecules) * 100) if molecules else 0.0
-    return reads, molecules, singles, duplication, non_singleton_fraction
+    return reads, molecules, singles, saturation, non_singleton_fraction
 
 
 def _parallel_sample_metrics(job: tuple[float, str, int]):
@@ -163,49 +164,50 @@ def _parallel_sample_metrics(job: tuple[float, str, int]):
 
 
 def _write_saturation_html(path: Path, sample_name: str, rows: list[dict]):
-    ratios = [float(row["downsample_ratio"]) for row in rows]
-    saturation = [float(row["sequencing_saturation"]) for row in rows]
-    non_singleton = [float(row["non_singleton_molecule_fraction"]) for row in rows]
-    umi_types = [float(row["umi_types"]) for row in rows]
-    singletons = [float(row["umi_detected_once"]) for row in rows]
-    full_depth_saturation = next(
-        (value for ratio, value in zip(ratios, saturation) if ratio == 1.0),
-        saturation[-1] if saturation else 0.0,
-    )
-    max_non_singleton = max(non_singleton) if non_singleton else 0.0
     payload = {
-        "ratios": ratios,
-        "saturation": saturation,
-        "non_singleton": non_singleton,
-        "umi_types": umi_types,
-        "singletons": singletons,
+        "sample": sample_name,
+        "ratios": [float(row["downsample_ratio"]) for row in rows],
+        "saturation": [float(row["sequencing_saturation"]) for row in rows],
+        "non_singleton": [float(row["non_singleton_molecule_fraction"]) for row in rows],
+        "umi_types": [float(row["umi_types"]) for row in rows],
+        "singletons": [float(row["umi_detected_once"]) for row in rows],
     }
+    full_depth = next(
+        (row for row in rows if float(row["downsample_ratio"]) == 1.0),
+        max(rows, key=lambda row: float(row["downsample_ratio"]), default=None),
+    )
+    label = html.escape(sample_name)
+    if full_depth is not None:
+        label += (
+            f"<br>Saturation: {float(full_depth['sequencing_saturation']):.2f}%"
+            f"<br>Non-singleton molecule fraction: {float(full_depth['non_singleton_molecule_fraction']):.2f}%"
+        )
+    sample_label = json.dumps(label)
     page = f'''<!doctype html><html><head><meta charset="utf-8">
-<title>TagForge saturation · {html.escape(sample_name)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(sample_name)}</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<style>body{{margin:0;background:#f8fafc;color:#0f172a;font:15px Arial,sans-serif}}main{{max-width:980px;margin:auto;padding:32px}}.panel{{background:white;border:1px solid #e2e8f0;border-radius:16px;padding:20px;box-shadow:0 10px 30px #33415514}}.sub{{color:#64748b}}</style>
-</head><body><main><p class="sub">TAGFORGE / DOWNSAMPLE SATURATION</p>
-<h1>{html.escape(sample_name)} · full-depth sequencing saturation {full_depth_saturation:.2f}%</h1>
-<p class="sub">Selected ratio non-singleton molecule fraction: {max_non_singleton:.2f}%</p>
-<p class="sub">{html.escape(SAMPLING_NOTE)}</p>
-<section class="panel"><div id="saturation" style="height:540px"></div></section>
+<style>html,body{{margin:0;background:#fff;font-family:Arial,sans-serif}}body{{min-height:100vh;display:grid;place-items:center}}#saturation{{width:100%;max-width:500px;height:540px}}@media print{{body{{min-height:0}}}}@page{{size:500px 540px;margin:0}}</style>
+</head><body><div id="saturation"></div>
 <script>
 const data = {json.dumps(payload)};
 Plotly.newPlot('saturation', [
-  {{x:data.ratios,y:data.saturation,name:'Sequencing Saturation / Duplication',mode:'lines',yaxis:'y3',line:{{color:'#5963f5',width:3}}}},
-  {{x:data.ratios,y:data.non_singleton,name:'Non-singleton Molecule Fraction',mode:'lines',yaxis:'y3',line:{{color:'#e44c39',width:3}}}},
+  {{x:data.ratios,y:data.saturation,name:'Saturation',mode:'lines',yaxis:'y3',line:{{color:'#5963f5',width:3}}}},
+  {{x:data.ratios,y:data.non_singleton,name:'Non-singleton molecule fraction',mode:'lines',yaxis:'y3',line:{{color:'#e44c39',width:3}}}},
   {{x:data.ratios,y:data.umi_types,name:'UMI Types',mode:'lines',yaxis:'y2',line:{{color:'#37c58d',width:3}}}},
   {{x:data.ratios,y:data.singletons,name:'UMI detected once',mode:'lines',yaxis:'y',line:{{color:'#9c59f5',width:3}}}}
 ], {{
   template:'plotly_white',
   height:540,
+  font:{{family:'Arial'}},
+  annotations:[{{text:{sample_label},xref:'paper',yref:'paper',x:0.02,y:0.98,xanchor:'left',yanchor:'top',align:'left',showarrow:false,font:{{family:'Arial',size:16}}}}],
   legend:{{orientation:'h',x:0.5,xanchor:'center',y:-0.12}},
   xaxis:{{title:'Downsample Ratio'}},
   yaxis:{{title:'UMI detected once',domain:[0.04,0.48],rangemode:'tozero',titlefont:{{color:'#9c59f5'}},tickfont:{{color:'#9c59f5'}}}},
   yaxis2:{{title:'UMI Types',overlaying:'y',side:'right',domain:[0.04,0.48],rangemode:'tozero',titlefont:{{color:'#37c58d'}},tickfont:{{color:'#37c58d'}}}},
-  yaxis3:{{title:'Read-level saturation / molecule fraction (%)',domain:[0.56,1],range:[0,100]}}
-}}, {{responsive:true}});
-</script></main></body></html>'''
+  yaxis3:{{title:'Saturation / non-singleton (%)',domain:[0.56,1],range:[0,100]}}
+}}, {{responsive:true,displayModeBar:false,displaylogo:false}});
+</script></body></html>'''
     with atomic_text(path) as handle:
         handle.write(page)
 
@@ -248,7 +250,6 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
             "reads_sampled": values.get("reads_sampled", ""),
             "umi_types": values.get("umi_types", ""),
             "umi_detected_once": values.get("umi_detected_once", ""),
-            "duplication_ratio": values.get("duplication_ratio", ""),
             "sequencing_saturation": values.get("sequencing_saturation", ""),
             "non_singleton_molecule_fraction": values.get("non_singleton_molecule_fraction", ""),
             "input_percent": values.get("input_percent", ""),
@@ -262,13 +263,13 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
             "downsample_progress\tstatus=%s\tmolecules_loaded=%s\ttotal_reads=%s\t"
             "ratios_completed=%s\ttotal_ratios=%s\tdownsample_ratio=%s\t"
             "reads_sampled=%s\tumi_types=%s\tumi_detected_once=%s\t"
-            "duplication_ratio=%s\tsequencing_saturation=%s\t"
+            "sequencing_saturation=%s\t"
             "non_singleton_molecule_fraction=%s\tinput_percent=%s\t"
             "elapsed_seconds=%s\tratios_per_second=%s\teta_seconds=%s\testimated_finish=%s",
             row["status"], row["molecules_loaded"], row["total_reads"],
             row["ratios_completed"], row["total_ratios"], row["downsample_ratio"],
             row["reads_sampled"], row["umi_types"],
-            row["umi_detected_once"], row["duplication_ratio"],
+            row["umi_detected_once"],
             row["sequencing_saturation"], row["non_singleton_molecule_fraction"], row["input_percent"],
             row["elapsed_seconds"], row["ratios_per_second"],
             row["eta_seconds"] or "NA", row["estimated_finish"] or "NA",
@@ -314,11 +315,11 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
     ratios_completed = 0
     try:
         results = executor.map(_parallel_sample_metrics, jobs) if executor else (_sample_metrics(counts, ratio, sample, seed) for ratio, sample, seed in jobs)
-        for (ratio, _, _), (reads, molecules, singles, duplication, non_singleton_fraction) in zip(jobs, results):
-            row = {"sample": sample_name, "downsample_ratio": ratio, "reads_sampled": reads, "umi_types": molecules, "umi_detected_once": singles, "duplication_ratio": f"{duplication:.6f}", "sequencing_saturation": f"{duplication:.6f}", "non_singleton_molecule_fraction": f"{non_singleton_fraction:.6f}"}
+        for (ratio, _, _), (reads, molecules, singles, saturation, non_singleton_fraction) in zip(jobs, results):
+            row = {"sample": sample_name, "downsample_ratio": ratio, "reads_sampled": reads, "umi_types": molecules, "umi_detected_once": singles, "sequencing_saturation": f"{saturation:.6f}", "non_singleton_molecule_fraction": f"{non_singleton_fraction:.6f}"}
             metric_rows.append(row)
             ratios_completed += 1
-            record_progress("sampling", molecules_loaded=molecules_loaded, total_reads=total_reads, ratios_completed=ratios_completed, total_ratios=total_ratio_jobs, downsample_ratio=ratio, reads_sampled=reads, umi_types=molecules, umi_detected_once=singles, duplication_ratio=f"{duplication:.6f}", sequencing_saturation=f"{duplication:.6f}", non_singleton_molecule_fraction=f"{non_singleton_fraction:.6f}")
+            record_progress("sampling", molecules_loaded=molecules_loaded, total_reads=total_reads, ratios_completed=ratios_completed, total_ratios=total_ratio_jobs, downsample_ratio=ratio, reads_sampled=reads, umi_types=molecules, umi_detected_once=singles, sequencing_saturation=f"{saturation:.6f}", non_singleton_molecule_fraction=f"{non_singleton_fraction:.6f}")
     finally:
         if executor:
             executor.shutdown()
@@ -376,7 +377,6 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
         downsample_ratio=ratio,
         reads_sampled=optimal["reads_sampled"], umi_types=optimal["umi_types"],
         umi_detected_once=optimal["umi_detected_once"],
-        duplication_ratio=optimal["duplication_ratio"],
         sequencing_saturation=optimal["sequencing_saturation"],
         non_singleton_molecule_fraction=optimal["non_singleton_molecule_fraction"],
     )

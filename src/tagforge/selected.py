@@ -84,10 +84,10 @@ def selection_point(config, sample):
     """A report view derived from the sole authoritative selection record."""
     selected = load_selection(config, sample)
     reads = selected["metrics"]["reads_sampled"]
-    duplication = round(100 * (reads - selected["metrics"]["umi_types"]) / reads, 6) if reads else 0.0
+    saturation = round(100 * (reads - selected["metrics"]["umi_types"]) / reads, 6) if reads else 0.0
     return {"sample": sample, "optimal_downsample_ratio": selected["ratio"],
             "selected_ratio": selected["ratio"],
-            **selected["metrics"], "sequencing_saturation": duplication, "duplication_ratio": duplication,
+            **selected["metrics"], "sequencing_saturation": saturation,
             "max_non_singleton_molecule_fraction": selected["non_singleton_molecule_fraction"],
             "non_singleton_molecule_fraction": selected["non_singleton_molecule_fraction"],
             "selection_criterion": selected["criterion"]}

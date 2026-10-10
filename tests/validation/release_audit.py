@@ -116,8 +116,8 @@ def main():
     for row in metric_rows:
         reads, molecules, singles = (int(row[key]) for key in ("reads_sampled", "umi_types", "umi_detected_once"))
         expected = 100 * (reads - molecules) / reads if reads else 0
-        assert math.isclose(float(row["duplication_ratio"]), expected, abs_tol=1e-6)
-        assert row["duplication_ratio"] == row["sequencing_saturation"]
+        assert math.isclose(float(row["sequencing_saturation"]), expected, abs_tol=1e-6)
+        assert "duplication_ratio" not in row
         expected = 100 * (molecules - singles) / molecules if molecules else 0
         assert math.isclose(float(row["non_singleton_molecule_fraction"]), expected, abs_tol=1e-6)
     workbook = openpyxl.load_workbook(directory / "06_report/example.report.xlsx", data_only=True)

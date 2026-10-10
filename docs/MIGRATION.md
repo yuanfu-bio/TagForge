@@ -53,8 +53,8 @@ accepted where required, and every UMI segment of configured length using ACGT.
 Exclusive rejection reasons reconcile input reads with eligible reads.
 Only explicitly configured `quick_test.min_valid_rate` and
 `quick_test.max_n_base_rate` thresholds cause QC to stop a run.
-Quick-test rates and threshold values use fractions (0–1). Its
-`duplication_ratio` now uses percent (0–100), matching downsampling;
+Quick-test rates and threshold values use fractions (0–1).
+Quick-test `duplication_ratio` now uses percent (0–100);
 older quick-test files stored that metric as a fraction. The new TSV records
 both unit conventions explicitly.
 
@@ -64,8 +64,10 @@ Batch reports now live under `{output_dir}/00_report/` as
 `TagForge_batch_report.html` and the unified `TagForge_batch_report.xlsx`.
 `00_summary.xlsx` and `01_FB_not_in_anno.xlsx` are retired; their QC and
 annotation details are included in `Summary`, `Downsample` and `Warnings`.
-The unified workbook writes `Counts_raw` and, only if any selected ratio
-is below 1, `Counts_final`. Previous `count`/`counts` sheet consumers must
+The unified workbook always writes both `Counts_raw` and `Counts_final` for
+standard and PI-seq libraries. `Counts_final` uses the validated selected counts;
+when the selected ratio is 1 or downsampling is disabled, its counts match
+`Counts_raw`. Previous `count`/`counts` sheet consumers must
 choose the intended source explicitly. Feature columns are ordered by name.
 Rate columns in `Summary` use fractions; saturation and non-singleton metrics
 in `Downsample` use percent. PB–CB retains mapping summaries/previews without
@@ -98,8 +100,9 @@ before exporting; an existing matrix file alone is not accepted as current.
 
 ## Selected ratio and diagnostic metrics
 
-`sequencing_saturation` and `duplication_ratio` are percentages of supporting
-reads beyond the first detected molecule read: `100*(reads-molecules)/reads`.
+Downsampling reports two percentage metrics. `sequencing_saturation` is
+`100*(reads-molecules)/reads`; the duplicate `duplication_ratio` column is
+removed from per-ratio metrics, curves and selected-result views.
 `non_singleton_molecule_fraction` is `100*(molecules-singletons)/molecules`.
 Zero denominators yield zero. Units and denominators refer to the same eligible
 read population and fixed corrected molecule groups.

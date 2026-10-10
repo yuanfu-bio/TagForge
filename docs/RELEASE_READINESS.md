@@ -67,7 +67,7 @@ Snappy 变更快照已通过 Python 3.9/3.11/3.13 各 96 项回归；四个真�
 | downsample | 保留 read-level saturation 与 non-singleton 区分；按单次观测指标选择 ratio，并用明确 selected 引用。数学真值、全深度切换与跨格式数值验证。                              |
 | io_utils   | 原 schema-version helper 保留为 legacy 辅助，当前正式完成判定统一进入 checkpoint；version-only marker 不再复用。旧状态用例及 CLI 迁移验证。                                       |
 | pipeline   | 保留 PB–CB 诊断和批次重扫描方向，替换为按配置的阶段计划、互斥及 journal 发布；三文库/disabled/多样本完整和独立流程验证。                                                         |
-| reports    | 保留原指标区分与布局，改为 current manifests/selected 来源、mean/SD、PB–CB mapping 报告与正确 Excel OOXML。实际打开及跨格式数值验证。                                            |
+| reports    | 保留原指标区分与布局，改为 current manifests/selected 来源、单次采样观测值、PB–CB mapping 报告与正确 Excel OOXML。实际打开及跨格式数值验证。                                            |
 
 旧 examples 数据迁移到 `tests/fixtures/small_fastq`；公开生成器与 fixture 的配对 records
 保留，配置和教程引用更新。真实数据及历史日期归档保留在项目内的忽略目录。
