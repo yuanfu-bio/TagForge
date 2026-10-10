@@ -6,35 +6,31 @@ import hashlib
 import html
 import json
 import multiprocessing
+import math
 import random
 import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from .config import TagForgeConfig
-from .columnar import ParquetFragmentWriter, open_records, record_batches
-from .io_utils import atomic_text, open_tsv, sample_dirs, tsv_batches, write_tsv
+from .columnar import ParquetFragmentWriter, open_records, resolve_table, record_batches
+from .io_utils import atomic_text, open_tsv, sample_dirs, write_progress, tsv_batches, write_tsv
 from .logging_utils import sample_logger
 from .matrix import matrix_from_molecules
+from .selected import write_selection
 
 
 METRIC_FIELDS = ["sample", "downsample_ratio", "reads_sampled", "umi_types", "umi_detected_once",
-                 "duplication_ratio", "sequencing_saturation", "repeat"]
-PROGRESS_FIELDS = [
-    "status", "molecules_loaded", "total_reads", "ratios_completed", "total_ratios",
-    "downsample_ratio", "repeat", "reads_sampled", "umi_types", "umi_detected_once",
-    "duplication_ratio", "sequencing_saturation", "input_percent",
-    "elapsed_seconds", "ratios_per_second", "eta_seconds", "estimated_finish",
-]
+                 "duplication_ratio", "sequencing_saturation", "non_singleton_molecule_fraction"]
 
 
 # Forked workers inherit the molecule counts copy-on-write, avoiding repeated
-# serialization of the complete vector for every ratio/repeat task.
+# serialization of the complete vector for every ratio task.
 _WORKER_COUNTS: list[int] | Counter[int] | None = None
 
 
-def _seed(base: int, sample: str, ratio: float, repeat: int) -> int:
-    digest = hashlib.sha256(f"{base}:{sample}:{ratio:.12g}:{repeat}".encode()).digest()
+def _seed(base: int, sample: str, ratio: float) -> int:
+    digest = hashlib.sha256(f"{base}:{sample}:{ratio:.12g}".encode()).digest()
     return int.from_bytes(digest[:8], "big")
 
 
@@ -52,8 +48,8 @@ def calculate_metrics(supports):
         molecules = sum(int(multiplicity) for multiplicity in supports.values())
         singles = int(supports.get(1, 0))
         duplication = ((reads - molecules) / reads * 100) if reads else 0.0
-        saturation = ((1 - singles / molecules) * 100) if molecules else 0.0
-        return reads, molecules, singles, duplication, saturation
+        non_singleton_fraction = ((1 - singles / molecules) * 100) if molecules else 0.0
+        return reads, molecules, singles, duplication, non_singleton_fraction
     reads = 0
     molecules = 0
     singles = 0
@@ -66,8 +62,57 @@ def calculate_metrics(supports):
         if count == 1:
             singles += 1
     duplication = ((reads - molecules) / reads * 100) if reads else 0.0
-    saturation = ((1 - singles / molecules) * 100) if molecules else 0.0
-    return reads, molecules, singles, duplication, saturation
+    non_singleton_fraction = ((1 - singles / molecules) * 100) if molecules else 0.0
+    return reads, molecules, singles, duplication, non_singleton_fraction
+
+
+CURVE_METRICS = ("reads_sampled", "umi_types", "umi_detected_once", "sequencing_saturation",
+                 "duplication_ratio", "non_singleton_molecule_fraction")
+SAMPLING_NOTE = (
+    "Each ratio is sampled once using a reproducible random seed. "
+    "Reads are sampled from fixed full-depth corrected molecule groups; UMI correction and library filtering are not rerun. "
+    "The selected ratio maximizes the observed non-singleton molecule fraction, with ties using the lower ratio. "
+    "This diagnostic does not establish recommended sequencing depth. Analytical count expectations are stored separately."
+)
+
+
+def curve_rows(rows):
+    """Return the single observed result at each ratio in ratio order."""
+    result = []
+    seen = set()
+    for row in sorted(rows, key=lambda row: float(row["downsample_ratio"])):
+        ratio = float(row["downsample_ratio"])
+        if ratio in seen:
+            raise ValueError("Expected one downsampling result per ratio")
+        seen.add(ratio)
+        result.append({"sample": row["sample"], "downsample_ratio": ratio,
+                       **{metric: float(row[metric]) for metric in CURVE_METRICS}})
+    return result
+
+
+def choose_selection(rows):
+    curve_rows(rows)
+    selected = dict(max(rows, key=lambda row: (
+        float(row["non_singleton_molecule_fraction"]), -float(row["downsample_ratio"]))))
+    selected["selection_criterion"] = "max_non_singleton_molecule_fraction"
+    return selected
+
+
+def expected_counts(histogram, ratio):
+    """Exact count expectations under thinning of fixed full-depth molecules.
+
+    This does not report expectations of nonlinear fractions, re-cluster UMIs,
+    or repeat library filtering at each depth.
+    """
+    if ratio == 0:
+        return 0.0, 0.0, 0.0
+    reads = sum(n * count for n, count in histogram.items()) * ratio
+    if ratio == 1:
+        return reads, float(sum(histogram.values())), float(histogram.get(1, 0))
+    log_survival = math.log1p(-ratio)
+    molecules = sum(-math.expm1(n * log_survival) * count for n, count in histogram.items())
+    singletons = sum(n * ratio * math.exp((n - 1) * log_survival) * count for n, count in histogram.items())
+    return reads, molecules, singletons
 
 
 def _analysis_ratios(config: TagForgeConfig) -> list[float]:
@@ -78,26 +123,26 @@ def _analysis_ratios(config: TagForgeConfig) -> list[float]:
     return sorted(ratios)
 
 
-def _sample_counts(counts: list[int], ratio: float, sample_name: str, repeat: int, seed: int) -> list[int]:
+def _sample_counts(counts: list[int], ratio: float, sample_name: str, seed: int) -> list[int]:
     if ratio <= 0:
         return [0] * len(counts)
     if ratio >= 1:
         return list(counts)
-    rng = random.Random(_seed(seed, sample_name, ratio, repeat))
+    rng = random.Random(_seed(seed, sample_name, ratio))
     return [_binomial(count, ratio, rng) for count in counts]
 
 
-def _sample_metrics(counts: list[int], ratio: float, sample_name: str, repeat: int, seed: int):
+def _sample_metrics(counts: list[int], ratio: float, sample_name: str, seed: int):
     """Sample and calculate metrics in one pass without retaining sampled counts."""
     if ratio <= 0:
         return 0, 0, 0, 0.0, 0.0
     if ratio >= 1:
         return calculate_metrics(counts)
-    rng = random.Random(_seed(seed, sample_name, ratio, repeat))
+    rng = random.Random(_seed(seed, sample_name, ratio))
     reads = molecules = singles = 0
     iterable = sorted(counts.items()) if isinstance(counts, Counter) else ((count, 1) for count in counts)
     for count, multiplicity in iterable:
-        value_rng = random.Random(_seed(seed, f"{sample_name}:{count}", ratio, repeat)) if isinstance(counts, Counter) else rng
+        value_rng = random.Random(_seed(seed, f"{sample_name}:{count}", ratio)) if isinstance(counts, Counter) else rng
         for _ in range(multiplicity):
             sampled = _binomial(count, ratio, value_rng)
             if sampled <= 0:
@@ -106,43 +151,49 @@ def _sample_metrics(counts: list[int], ratio: float, sample_name: str, repeat: i
             molecules += 1
             singles += 1 if sampled == 1 else 0
     duplication = ((reads - molecules) / reads * 100) if reads else 0.0
-    saturation = ((1 - singles / molecules) * 100) if molecules else 0.0
-    return reads, molecules, singles, duplication, saturation
+    non_singleton_fraction = ((1 - singles / molecules) * 100) if molecules else 0.0
+    return reads, molecules, singles, duplication, non_singleton_fraction
 
 
-def _parallel_sample_metrics(job: tuple[float, int, str, int]):
+def _parallel_sample_metrics(job: tuple[float, str, int]):
     if _WORKER_COUNTS is None:
         raise RuntimeError("downsample worker counts are not initialized")
-    ratio, repeat, sample_name, seed = job
-    return _sample_metrics(_WORKER_COUNTS, ratio, sample_name, repeat, seed)
+    ratio, sample_name, seed = job
+    return _sample_metrics(_WORKER_COUNTS, ratio, sample_name, seed)
 
 
 def _write_saturation_html(path: Path, sample_name: str, rows: list[dict]):
     ratios = [float(row["downsample_ratio"]) for row in rows]
     saturation = [float(row["sequencing_saturation"]) for row in rows]
-    duplication = [float(row["duplication_ratio"]) for row in rows]
-    umi_types = [int(row["umi_types"]) for row in rows]
-    singletons = [int(row["umi_detected_once"]) for row in rows]
-    max_saturation = max(saturation) if saturation else 0.0
+    non_singleton = [float(row["non_singleton_molecule_fraction"]) for row in rows]
+    umi_types = [float(row["umi_types"]) for row in rows]
+    singletons = [float(row["umi_detected_once"]) for row in rows]
+    full_depth_saturation = next(
+        (value for ratio, value in zip(ratios, saturation) if ratio == 1.0),
+        saturation[-1] if saturation else 0.0,
+    )
+    max_non_singleton = max(non_singleton) if non_singleton else 0.0
     payload = {
         "ratios": ratios,
         "saturation": saturation,
-        "duplication": duplication,
+        "non_singleton": non_singleton,
         "umi_types": umi_types,
         "singletons": singletons,
     }
     page = f'''<!doctype html><html><head><meta charset="utf-8">
 <title>TagForge saturation · {html.escape(sample_name)}</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<style>body{{margin:0;background:#f8fafc;color:#0f172a;font:15px system-ui}}main{{max-width:980px;margin:auto;padding:32px}}.panel{{background:white;border:1px solid #e2e8f0;border-radius:16px;padding:20px;box-shadow:0 10px 30px #33415514}}.sub{{color:#64748b}}</style>
+<style>body{{margin:0;background:#f8fafc;color:#0f172a;font:15px Arial,sans-serif}}main{{max-width:980px;margin:auto;padding:32px}}.panel{{background:white;border:1px solid #e2e8f0;border-radius:16px;padding:20px;box-shadow:0 10px 30px #33415514}}.sub{{color:#64748b}}</style>
 </head><body><main><p class="sub">TAGFORGE / DOWNSAMPLE SATURATION</p>
-<h1>{html.escape(sample_name)} · max saturation {max_saturation:.2f}%</h1>
+<h1>{html.escape(sample_name)} · full-depth sequencing saturation {full_depth_saturation:.2f}%</h1>
+<p class="sub">Selected ratio non-singleton molecule fraction: {max_non_singleton:.2f}%</p>
+<p class="sub">{html.escape(SAMPLING_NOTE)}</p>
 <section class="panel"><div id="saturation" style="height:540px"></div></section>
 <script>
 const data = {json.dumps(payload)};
 Plotly.newPlot('saturation', [
-  {{x:data.ratios,y:data.saturation,name:'Sequencing Saturation',mode:'lines',yaxis:'y3',line:{{color:'#5963f5',width:3}}}},
-  {{x:data.ratios,y:data.duplication,name:'Duplication Ratio',mode:'lines',yaxis:'y3',line:{{color:'#e44c39',width:3}}}},
+  {{x:data.ratios,y:data.saturation,name:'Sequencing Saturation / Duplication',mode:'lines',yaxis:'y3',line:{{color:'#5963f5',width:3}}}},
+  {{x:data.ratios,y:data.non_singleton,name:'Non-singleton Molecule Fraction',mode:'lines',yaxis:'y3',line:{{color:'#e44c39',width:3}}}},
   {{x:data.ratios,y:data.umi_types,name:'UMI Types',mode:'lines',yaxis:'y2',line:{{color:'#37c58d',width:3}}}},
   {{x:data.ratios,y:data.singletons,name:'UMI detected once',mode:'lines',yaxis:'y',line:{{color:'#9c59f5',width:3}}}}
 ], {{
@@ -152,7 +203,7 @@ Plotly.newPlot('saturation', [
   xaxis:{{title:'Downsample Ratio'}},
   yaxis:{{title:'UMI detected once',domain:[0.04,0.48],rangemode:'tozero',titlefont:{{color:'#9c59f5'}},tickfont:{{color:'#9c59f5'}}}},
   yaxis2:{{title:'UMI Types',overlaying:'y',side:'right',domain:[0.04,0.48],rangemode:'tozero',titlefont:{{color:'#37c58d'}},tickfont:{{color:'#37c58d'}}}},
-  yaxis3:{{title:'Saturation / Duplication (%)',domain:[0.56,1],range:[0,100]}}
+  yaxis3:{{title:'Read-level saturation / molecule fraction (%)',domain:[0.56,1],range:[0,100]}}
 }}, {{responsive:true}});
 </script></main></body></html>'''
     with atomic_text(path) as handle:
@@ -163,16 +214,14 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
     dirs = sample_dirs(config.output_dir, sample_name)
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
     source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.parquet" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.parquet")
-    if not source.exists(): source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
+    source = resolve_table(source, source.with_name(source.name.replace(".parquet", ".tsv.gz")))
     metrics_path = dirs["downsample"] / f"{sample_name}.downsample_metrics.tsv"
-    point_path = dirs["downsample"] / f"{sample_name}.optimal_saturation_point.tsv"
     html_path = dirs["downsample"] / f"{sample_name}.downsample.html"
-    progress_path = dirs["logs"] / f"{sample_name}.downsample_progress.tsv"
+    progress_path = dirs["logs"] / f"{sample_name}.progress.json"
     optimal_parquet = dirs["detail"] / f"{sample_name}.optimal_saturation_molecule_detail.parquet"
     barcode1_col = config.target_name("barcode1")
     barcode2_name_col = f"{config.target_name('barcode2')}_name"
     started = time.monotonic()
-    progress_rows = []
 
     def record_progress(status: str, **values):
         now = time.monotonic()
@@ -196,31 +245,31 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
             "ratios_completed": ratios_completed,
             "total_ratios": total_ratios,
             "downsample_ratio": values.get("downsample_ratio", ""),
-            "repeat": values.get("repeat", ""),
             "reads_sampled": values.get("reads_sampled", ""),
             "umi_types": values.get("umi_types", ""),
             "umi_detected_once": values.get("umi_detected_once", ""),
             "duplication_ratio": values.get("duplication_ratio", ""),
             "sequencing_saturation": values.get("sequencing_saturation", ""),
+            "non_singleton_molecule_fraction": values.get("non_singleton_molecule_fraction", ""),
             "input_percent": values.get("input_percent", ""),
             "elapsed_seconds": f"{elapsed:.2f}",
             "ratios_per_second": f"{rate:.3f}",
             "eta_seconds": f"{eta:.2f}" if eta else "",
             "estimated_finish": finish,
         }
-        progress_rows.append(row)
-        write_tsv(progress_path, PROGRESS_FIELDS, progress_rows)
+        write_progress(progress_path, sample_name, "downsample", row)
         logger.info(
             "downsample_progress\tstatus=%s\tmolecules_loaded=%s\ttotal_reads=%s\t"
-            "ratios_completed=%s\ttotal_ratios=%s\tdownsample_ratio=%s\trepeat=%s\t"
+            "ratios_completed=%s\ttotal_ratios=%s\tdownsample_ratio=%s\t"
             "reads_sampled=%s\tumi_types=%s\tumi_detected_once=%s\t"
-            "duplication_ratio=%s\tsequencing_saturation=%s\tinput_percent=%s\t"
+            "duplication_ratio=%s\tsequencing_saturation=%s\t"
+            "non_singleton_molecule_fraction=%s\tinput_percent=%s\t"
             "elapsed_seconds=%s\tratios_per_second=%s\teta_seconds=%s\testimated_finish=%s",
             row["status"], row["molecules_loaded"], row["total_reads"],
             row["ratios_completed"], row["total_ratios"], row["downsample_ratio"],
-            row["repeat"], row["reads_sampled"], row["umi_types"],
+            row["reads_sampled"], row["umi_types"],
             row["umi_detected_once"], row["duplication_ratio"],
-            row["sequencing_saturation"], row["input_percent"],
+            row["sequencing_saturation"], row["non_singleton_molecule_fraction"], row["input_percent"],
             row["elapsed_seconds"], row["ratios_per_second"],
             row["eta_seconds"] or "NA", row["estimated_finish"] or "NA",
         )
@@ -240,18 +289,15 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
         )
 
     ratios = _analysis_ratios(config)
-    total_ratio_jobs = 0
-    for ratio in ratios:
-        total_ratio_jobs += 1 if ratio in {0.0, 1.0} else config.downsample_repeats
+    total_ratio_jobs = len(ratios)
     logger.info(
-        "downsample_start\tmolecules=%s\ttotal_reads=%s\tratios=%s\trepeats=%s\t"
+        "downsample_start\tmolecules=%s\ttotal_reads=%s\tratios=%s\t"
         "sampling_backend=%s",
-         molecules_loaded, total_reads, len(ratios), config.downsample_repeats,
+        molecules_loaded, total_reads, len(ratios),
         "random.binomialvariate" if hasattr(random.Random(), "binomialvariate") else "python-loop",
     )
 
-    jobs = [(ratio, repeat, sample_name, config.downsample_seed) for ratio in ratios
-            for repeat in ([0] if ratio in {0.0, 1.0} else range(1, config.downsample_repeats + 1))]
+    jobs = [(ratio, sample_name, config.downsample_seed) for ratio in ratios]
     requested_workers = config.downsample_workers or config.threads
     workers = min(requested_workers, len(jobs))
     executor = None
@@ -267,55 +313,80 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
     metric_rows = []
     ratios_completed = 0
     try:
-        results = executor.map(_parallel_sample_metrics, jobs) if executor else (_sample_metrics(counts, ratio, sample, repeat, seed) for ratio, repeat, sample, seed in jobs)
-        for (ratio, repeat, _, _), (reads, molecules, singles, duplication, saturation) in zip(jobs, results):
-            row = {"sample": sample_name, "downsample_ratio": ratio, "reads_sampled": reads, "umi_types": molecules, "umi_detected_once": singles, "duplication_ratio": f"{duplication:.6f}", "sequencing_saturation": f"{saturation:.6f}", "repeat": repeat}
+        results = executor.map(_parallel_sample_metrics, jobs) if executor else (_sample_metrics(counts, ratio, sample, seed) for ratio, sample, seed in jobs)
+        for (ratio, _, _), (reads, molecules, singles, duplication, non_singleton_fraction) in zip(jobs, results):
+            row = {"sample": sample_name, "downsample_ratio": ratio, "reads_sampled": reads, "umi_types": molecules, "umi_detected_once": singles, "duplication_ratio": f"{duplication:.6f}", "sequencing_saturation": f"{duplication:.6f}", "non_singleton_molecule_fraction": f"{non_singleton_fraction:.6f}"}
             metric_rows.append(row)
             ratios_completed += 1
-            record_progress("sampling", molecules_loaded=molecules_loaded, total_reads=total_reads, ratios_completed=ratios_completed, total_ratios=total_ratio_jobs, downsample_ratio=ratio, repeat=repeat, reads_sampled=reads, umi_types=molecules, umi_detected_once=singles, duplication_ratio=f"{duplication:.6f}", sequencing_saturation=f"{saturation:.6f}")
+            record_progress("sampling", molecules_loaded=molecules_loaded, total_reads=total_reads, ratios_completed=ratios_completed, total_ratios=total_ratio_jobs, downsample_ratio=ratio, reads_sampled=reads, umi_types=molecules, umi_detected_once=singles, duplication_ratio=f"{duplication:.6f}", sequencing_saturation=f"{duplication:.6f}", non_singleton_molecule_fraction=f"{non_singleton_fraction:.6f}")
     finally:
         if executor:
             executor.shutdown()
         _WORKER_COUNTS = None
     write_tsv(metrics_path, METRIC_FIELDS, metric_rows)
-    _write_saturation_html(html_path, sample_name, metric_rows)
-    optimal = max(metric_rows, key=lambda row: (float(row["sequencing_saturation"]), -float(row["downsample_ratio"]), -int(row["repeat"])))
-    point_fields = [x for x in METRIC_FIELDS if x != "repeat"]
-    point = dict(optimal); point["optimal_downsample_ratio"] = point.pop("downsample_ratio")
-    point["max_sequencing_saturation"] = point.pop("sequencing_saturation")
-    point_fields = ["sample", "optimal_downsample_ratio", "max_sequencing_saturation", "reads_sampled",
-                    "umi_types", "umi_detected_once", "duplication_ratio"]
-    write_tsv(point_path, point_fields, [point])
-    ratio, repeat = float(optimal["downsample_ratio"]), int(optimal["repeat"])
+    curves = []
+    for row in curve_rows(metric_rows):
+        ratio = row["downsample_ratio"]
+        curves.append({**{key if key in {"sample", "downsample_ratio"} else "observed_" + key: value
+                         for key, value in row.items()},
+                       **dict(zip(("expected_reads", "expected_molecules", "expected_singletons"), expected_counts(counts, ratio)))})
+    write_tsv(dirs["downsample"] / f"{sample_name}.downsample_curve.tsv", list(curves[0]), curves)
+    _write_saturation_html(html_path, sample_name, curve_rows(metric_rows))
+    optimal = choose_selection(metric_rows)
+    ratio = float(optimal["downsample_ratio"])
+    owned = []
+    selected_molecules = source
+    matrix_paths = None
     if ratio < 1.0:
         rngs = {}
         fields = [barcode1_col, barcode2_name_col, "corrected_umi", "reads_count_at_optimal_downsample"]
-        writer = ParquetFragmentWriter(optimal_parquet, fields, config.chunk_size)
+        writer = ParquetFragmentWriter(optimal_parquet, fields, config.chunk_size, compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
+        selected_reads = selected_count = selected_singletons = 0
         for row in open_records(source):
             original_count = int(row["reads_count"])
-            rng = rngs.setdefault(original_count, random.Random(_seed(config.downsample_seed, f"{sample_name}:{original_count}", ratio, repeat)))
+            rng = rngs.setdefault(original_count, random.Random(_seed(config.downsample_seed, f"{sample_name}:{original_count}", ratio)))
             count = _binomial(original_count, ratio, rng)
             if count:
+                selected_reads += count
+                selected_count += 1
+                selected_singletons += int(count == 1)
                 writer.writerow({barcode1_col: row[barcode1_col], barcode2_name_col: row[barcode2_name_col],
                                  "corrected_umi": row["corrected_umi"], "reads_count_at_optimal_downsample": count})
         writer.close()
+        if (selected_reads, selected_count, selected_singletons) != (
+            int(optimal["reads_sampled"]), int(optimal["umi_types"]), int(optimal["umi_detected_once"])):
+            raise RuntimeError("Selected molecule details do not match downsample metrics")
+        selected_molecules = optimal_parquet
+        owned.append(optimal_parquet)
+    if not config.pb_cb_enabled:
         from .sparse_matrix import build_sparse_matrix
-        build_sparse_matrix(optimal_parquet, dirs["matrix"], sample_name, barcode1_col, barcode2_name_col, prefix="optimal")
+        if ratio >= 1.0:
+            from .sparse_matrix import pair_path, summary_path
+            matrix_paths = (pair_path(dirs["matrix"], sample_name), summary_path(dirs["matrix"], sample_name))
+            if not all(path.exists() for path in matrix_paths):
+                matrix_paths = build_sparse_matrix(source, dirs["matrix"], sample_name, barcode1_col, barcode2_name_col, prefix="optimal", threads=config.threads, memory_mb=config.matrix_memory_mb, compression_level=config.compression_level, compression=config.parquet_compression)
+                owned.extend(matrix_paths)
+        else:
+            matrix_paths = build_sparse_matrix(selected_molecules, dirs["matrix"], sample_name, barcode1_col, barcode2_name_col, prefix="optimal", threads=config.threads, memory_mb=config.matrix_memory_mb, compression_level=config.compression_level, compression=config.parquet_compression)
+            owned.extend(matrix_paths)
+    write_selection(config, sample_name, optimal, selected_molecules, matrix_paths, owned)
     record_progress(
         "completed", molecules_loaded=molecules_loaded, total_reads=total_reads,
         ratios_completed=ratios_completed, total_ratios=total_ratio_jobs,
-        downsample_ratio=ratio, repeat=repeat,
+        downsample_ratio=ratio,
         reads_sampled=optimal["reads_sampled"], umi_types=optimal["umi_types"],
         umi_detected_once=optimal["umi_detected_once"],
         duplication_ratio=optimal["duplication_ratio"],
         sequencing_saturation=optimal["sequencing_saturation"],
+        non_singleton_molecule_fraction=optimal["non_singleton_molecule_fraction"],
     )
     logger.info(
         "downsample_summary\tmolecules=%s\ttotal_reads=%s\tratios=%s\t"
-        "ratio_jobs=%s\toptimal_ratio=%s\tmax_sequencing_saturation=%s\t"
+        "ratio_jobs=%s\toptimal_ratio=%s\tmax_non_singleton_molecule_fraction=%s\t"
         "reads_sampled=%s\telapsed_time=%.3f",
          molecules_loaded, total_reads, len(ratios), total_ratio_jobs,
-        point["optimal_downsample_ratio"], point["max_sequencing_saturation"],
-        point["reads_sampled"], time.monotonic() - started,
+        optimal["downsample_ratio"], optimal["non_singleton_molecule_fraction"],
+        optimal["reads_sampled"], time.monotonic() - started,
     )
-    return [metrics_path, point_path, html_path], optimal
+    return [metrics_path, dirs["downsample"] / f"{sample_name}.downsample_curve.tsv",
+            dirs["downsample"] / f"{sample_name}.selection.json", html_path], optimal

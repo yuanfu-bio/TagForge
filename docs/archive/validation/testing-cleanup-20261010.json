@@ -1,0 +1,147 @@
+{
+  "status": "complete",
+  "date": "2026-10-10T17:22:00.428324+08:00",
+  "development_environment": "/data/home/yfu/miniconda3/envs/tagforge",
+  "python": "3.11.15 | packaged by conda-forge | (main, Jun 11 2026, 03:34:02) [GCC 14.3.0]",
+  "former_archive_root": "tests/validation/02_output",
+  "archive_root": "docs/archive/testing",
+  "removed": [
+    {
+      "path": "tests/validation/02_output/m4-20261009/env39",
+      "allocated_bytes": 1626616832
+    },
+    {
+      "path": "tests/validation/02_output/m4-20261009/env311",
+      "allocated_bytes": 1528286720
+    },
+    {
+      "path": "tests/validation/02_output/m4-20261009/env313",
+      "allocated_bytes": 1444739584
+    },
+    {
+      "path": "tests/validation/02_output/m4-20261009/conda-pkgs",
+      "allocated_bytes": 745430528
+    }
+  ],
+  "historical_snapshot_policy": "Retained snapshots and logs preserve their original contents and embedded execution paths; resolve old archive paths using relocation.json.",
+  "retained_archive_entries": 18680,
+  "retained_regular_files": 13667,
+  "retained_apparent_bytes": 1200245096,
+  "verified_rename": "All retained files and links keep their inode, size, mtime and target; no snapshot contents were rewritten.",
+  "archive_batches": [
+    "compact-output-20261010-005722",
+    "documentation-archive-20261009",
+    "documentation-layout-20261009",
+    "m1-20261009",
+    "m2-20261009",
+    "m3-20261009",
+    "m4-20261009",
+    "merged-batch-report-20261010-003646",
+    "pi-seq-dev-2.0.0-20261009-220831",
+    "pi-seq-dev-2.0.0-snappy-20261009-234838",
+    "remove-tmp-directory-20261010-012400",
+    "report-layout-20261010-002219"
+  ],
+  "reclaimed_allocated_bytes": 5345073664,
+  "rebased_locators": [
+    "docs/README.md",
+    "docs/RELEASE_READINESS.md",
+    "docs/pi_seq_dev.md",
+    "docs/validation.md",
+    "docs/archive/2.0.0/TagForge_2.0.0_plan.md",
+    "docs/archive/2.0.0/TagForge_2.0.0_progress.md",
+    "tests/validation/release.json",
+    "tests/validation/source-review.json",
+    "tests/fixtures/pi_seq_dev/02_output/latest_run.json",
+    "docs/archive/validation/m1.json",
+    "docs/archive/validation/m2.json",
+    "docs/archive/validation/m3.json",
+    "docs/archive/validation/m4-preflight.json",
+    "docs/archive/validation/m4-rc1.json",
+    "docs/archive/validation/m4-rc2.json"
+  ],
+  "verification": {
+    "executable": "/data/home/yfu/miniconda3/envs/tagforge/bin/python",
+    "python": "3.11.15 | packaged by conda-forge | (main, Jun 11 2026, 03:34:02) [GCC 14.3.0]",
+    "import_path": "/data/project/yanhuixu/yfu/TagForge/src/tagforge/__init__.py",
+    "cli_checks": [
+      {
+        "command": [
+          "/data/home/yfu/miniconda3/envs/tagforge/bin/python",
+          "-m",
+          "tagforge",
+          "--version"
+        ],
+        "exit_code": 0,
+        "output": "TagForge 2.0.0\n"
+      },
+      {
+        "command": [
+          "/data/home/yfu/miniconda3/envs/tagforge/bin/python",
+          "-m",
+          "tagforge",
+          "validate-config",
+          "--config",
+          "configs/config.example.yaml"
+        ],
+        "exit_code": 0,
+        "output": "Configuration is valid: /data/project/yanhuixu/yfu/TagForge/configs/config.example.yaml\nSamples: 1\nSegments: 3\ncutadapt: 5.2\numi_tools: UMI-tools version: 1.1.6\n"
+      },
+      {
+        "command": [
+          "/data/home/yfu/miniconda3/envs/tagforge/bin/python",
+          "-m",
+          "tagforge",
+          "validate-config",
+          "--config",
+          "tests/fixtures/pi_seq_dev/00_config/config.yaml"
+        ],
+        "exit_code": 0,
+        "output": "Configuration is valid: /data/project/yanhuixu/yfu/TagForge/tests/fixtures/pi_seq_dev/00_config/config.yaml\nSamples: 4\nSegments: 8\ncutadapt: 5.2\numi_tools: UMI-tools version: 1.1.6\n"
+      }
+    ],
+    "fixture_current_stages": {
+      "100-1-N1": {
+        "extract": true,
+        "correct": true,
+        "dedup": true,
+        "matrix": true,
+        "downsample": true,
+        "report": true
+      },
+      "100-2-SLE1": {
+        "extract": true,
+        "correct": true,
+        "dedup": true,
+        "matrix": true,
+        "downsample": true,
+        "report": true
+      },
+      "100-3-SLE2": {
+        "extract": true,
+        "correct": true,
+        "dedup": true,
+        "matrix": true,
+        "downsample": true,
+        "report": true
+      },
+      "100-5-N2": {
+        "extract": true,
+        "correct": true,
+        "dedup": true,
+        "matrix": true,
+        "downsample": true,
+        "report": true
+      }
+    },
+    "current_run_archive_locators": 10,
+    "archive_markdown_links": 65,
+    "history_snapshot_contents_rewritten": false,
+    "source_runtime_changed": false,
+    "full_suite_run": false,
+    "new_environment_created": false,
+    "package_archive_excluded": true,
+    "initial_cli_note": "Invoking the Python executable without adding its bin directory to PATH could not find cutadapt. Final checks use the existing environment bin directory, as with conda activation."
+  },
+  "completed_at": "2026-10-10T17:25:33.075459+08:00"
+}

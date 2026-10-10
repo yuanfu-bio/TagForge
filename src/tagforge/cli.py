@@ -9,8 +9,8 @@ from .config import ConfigError, load_config
 from .external_tools import check_external_tools
 from .pipeline import run_pipeline, run_step
 from .sparse_matrix import export_matrix, pair_path
-from .quick_test import quick_test_sample
-from .reports import batch_report, write_summary
+from .quick_test import quick_test_sample, enforce_quick_test
+from .reports import _completed_summary_samples, _summary_lock, batch_report, write_summary
 from .slurm import make_slurm
 
 
@@ -21,11 +21,11 @@ project:
   output_dir: 02_output
 samples:
   auto:
-    raw_dir: examples/small_fastq
+    raw_dir: tests/fixtures/small_fastq/raw
     r1: "{sample}_raw_1.fq.gz"
     r2: "{sample}_raw_2.fq.gz"
 barcode2_annotation:
-  fb_info: examples/FB_info.tsv
+  fb_info: tests/fixtures/small_fastq/config/FB_info.tsv
   id_column: FB_ID
   sequence_column: sequence
   name_column: antibody_name
@@ -53,7 +53,7 @@ barcode1:
       right_linker: AGGTC
       start: 0
       length: 8
-      whitelist: examples/CELL_WL.txt
+      whitelist: tests/fixtures/small_fastq/config/CELL_WL.txt
 barcode2:
   name: FB
   segments:
@@ -62,7 +62,7 @@ barcode2:
       method: fixed
       start: 6
       length: 6
-      whitelist: examples/FB_WL.txt
+      whitelist: tests/fixtures/small_fastq/config/FB_WL.txt
       correction:
         max_shift: 0
         allow_shift: false
@@ -80,16 +80,17 @@ downsample:
   enabled: true
   ratios: auto
   random_seed: 12345
-  repeats: 1
 quick_test:
   enabled: true
   reads: 10000
+output:
+  quick_test_read_details: false
 performance:
   threads: 2
   # Barcode whitelist correction is parallelized by extracted-read chunks.
   # Omit barcode_workers to use threads.
   # barcode_workers: 2
-  # Downsample ratio/repeat jobs use forked processes; omit to use threads.
+  # Downsample ratio jobs use forked processes; omit to use threads.
   # downsample_workers: 2
   # UMI aggregation uses GNU sort by default; workers control sort parallelism.
   # umi_aggregation_backend: external_sort  # or sqlite for legacy compatibility
@@ -98,10 +99,15 @@ performance:
   # UMI-tools groups are parallelized with processes. Omit umi_workers to use threads.
   # umi_workers: 2
   umi_batch_size: 5000
+  # Connected components are not split to fit this batch target.
+  # Optional budgets report the barcode/feature exceeding the limit.
+  # umi_max_group_umis: 1000000
+  # umi_max_component_umis: 100000
   umi_sqlite_cache_mb: 64
   chunk_size: 10000
-  extraction_preview_reads: 1000
-  compression_level: 3
+  extraction_preview_reads: 0
+  parquet_compression: snappy  # snappy (default) or zstd
+  compression_level: 3  # gzip, and Parquet only when using zstd
 resume:
   enabled: true
   overwrite: false
@@ -136,7 +142,7 @@ def parser():
     export.add_argument("--out", required=True)
     migrate = commands.add_parser("migrate-parquet", help="Build sparse Parquet matrix artifacts from existing molecule detail")
     _common(migrate)
-    summary = commands.add_parser("summary", help="Rebuild the multi-sample summary from completed samples")
+    summary = commands.add_parser("summary", help="Refresh the unified batch workbook from completed samples")
     summary.add_argument("--config", required=True, help="YAML configuration file")
     quick = commands.add_parser("quick-test", help="Inspect a small read subset without running the full pipeline")
     quick.add_argument("--config", required=True)
@@ -147,6 +153,9 @@ def parser():
     validate.add_argument("--config", required=True)
     init = commands.add_parser("init-config", help="Write an example configuration")
     init.add_argument("--out", required=True); init.add_argument("--force", action="store_true")
+    example = commands.add_parser("init-example", help="Generate a standalone deterministic synthetic project")
+    example.add_argument("--out", required=True, help="Project directory")
+    example.add_argument("--force", action="store_true")
     slurm = commands.add_parser("make-slurm", help="Generate Slurm scripts for one or many samples")
     slurm.add_argument("--config", required=True); slurm.add_argument("--out", required=True)
     slurm.add_argument("--threads", type=int, default=8); slurm.add_argument("--mem", default="16G"); slurm.add_argument("--time", default="24:00:00")
@@ -171,6 +180,11 @@ def _selected(config, requested):
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
+        if args.command == "init-example":
+            from .example_data import generate_example
+            out = generate_example(Path(args.out), EXAMPLE_CONFIG, force=args.force)
+            print(f"Wrote synthetic example: {out}")
+            return 0
         if args.command == "init-config":
             out = Path(args.out)
             if out.exists() and not args.force: raise ConfigError(f"Refusing to overwrite existing file: {out} (use --force)")
@@ -200,11 +214,22 @@ def main(argv=None):
             else:
                 print(f"Generated {len(files)-1} Slurm jobs and {files[-1]}")
             return 0
+        thread_override = getattr(args, "threads", None)
+        if thread_override is not None:
+            if thread_override < 1:
+                raise ConfigError("--threads must be >= 1")
+            config.threads = thread_override
         if args.command == "export-matrix":
             sample = config.sample(args.sample)
             del sample
+            from .checkpoint import stage_current
+            if not stage_current(config, args.sample, "matrix"):
+                raise ConfigError(
+                    f"Export requires a current matrix stage for {args.sample}; "
+                    "rerun affected upstream stages and tagforge matrix first"
+                )
             output = Path(args.out)
-            export_matrix(pair_path(config.output_dir / args.sample / "04_matrix", args.sample), output, args.format, config.target_name("barcode1"))
+            export_matrix(pair_path(config.output_dir / args.sample / "04_matrix", args.sample), output, args.format, config.target_name("barcode1"), threads=config.threads, memory_mb=config.matrix_memory_mb, compression=config.parquet_compression, compression_level=config.compression_level)
             print(f"Exported {args.format} matrix: {output}")
             return 0
         if args.command == "migrate-parquet":
@@ -217,10 +242,6 @@ def main(argv=None):
             print(f"TagForge summary completed for {len(samples)} samples: {output}")
             return 0
         names = _selected(config, args.sample)
-        if args.threads is not None:
-            if args.threads < 1:
-                raise ConfigError("--threads must be >= 1")
-            config.threads = args.threads
         if args.command == "run":
             if config.quick_test_enabled and not args.skip_quick_test:
                 for name in names:
@@ -231,6 +252,7 @@ def main(argv=None):
                         f"valid={summary['valid_rate']:.2%}, molecules={summary['molecules']:,}, "
                         f"elapsed={summary['elapsed']:.2f}s"
                     )
+                    enforce_quick_test(summary)
             run_pipeline(config, names, args.overwrite)
         elif args.command == "quick-test":
             check_external_tools()
@@ -244,18 +266,25 @@ def main(argv=None):
                     f"valid={summary['valid_rate']:.2%}, "
                     f"molecules={summary['molecules']:,}, elapsed={summary['elapsed']:.2f}s\n"
                     f"  TSV: {summary['stats']}\n  HTML: {summary['html']}\n"
-                    f"  Read IDs: {summary['read_ids']}\n  Log: {summary['log']}"
+                    f"  Read IDs: {summary['read_ids'] or 'disabled'}\n  Log: {summary['log']}"
                 )
+                enforce_quick_test(summary)
         else:
             if args.command in {"extract", "dedup"}:
                 check_external_tools()
             for name in names:
+                if args.command == "report" and config.downsample_enabled:
+                    run_step(config, name, "downsample", args.overwrite)
                 run_step(config, name, args.command, args.overwrite)
                 if args.command == "downsample":
                     write_summary(config)
             if args.command == "report":
-                batch_report(config, names)
-                write_summary(config)
+                # Rescan every completed sample under the shared lock instead
+                # of only the ones this invocation's --sample selected, so a
+                # per-sample `tagforge report --sample X` (or a SLURM array
+                # task) never clobbers the batch report with a single sample.
+                with _summary_lock(config.output_dir / ".summary.lock"):
+                    batch_report(config, _completed_summary_samples(config))
         print(f"TagForge {args.command} completed for: {', '.join(names)}")
         return 0
     except (ConfigError, FileNotFoundError, ValueError, RuntimeError) as exc:

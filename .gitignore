@@ -40,5 +40,18 @@ Thumbs.db
 # big files
 02_output/
 00_report/
-docs/
+# Keep the documentation index and curated history in version control.
+# Existing personal notes remain local under archive/legacy.
+docs/*
+!docs/*.md
+!docs/archive/
+docs/archive/*
+!docs/archive/CHANGELOG.md
+!docs/archive/TagForge_design.md
+!docs/archive/manifest.json
+!docs/archive/2.0.0/
+!docs/archive/validation/
 reference/
+
+# Real PI-seq development reads remain local; distribution permission is unverified.
+/tests/fixtures/pi_seq_dev/01_raw/

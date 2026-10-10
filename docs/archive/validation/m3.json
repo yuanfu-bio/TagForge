@@ -1,0 +1,42 @@
+{
+  "date": "2026-10-09",
+  "milestone": "M3",
+  "status": "completed",
+  "tests": {
+    "count": 81,
+    "result": "OK",
+    "elapsed_seconds": 16.929,
+    "source_snapshot": "docs/archive/testing/m3-20261009/validation-r2",
+    "source_audit": "docs/archive/testing/m3-20261009/source-r2-sha256.json",
+    "log": "docs/archive/testing/m3-20261009/tests-r2.log"
+  },
+  "implemented": [
+    "Exact barcode fast path",
+    "Streaming sparse matrix aggregation/export with explicit DuckDB resources",
+    "Single batch summary publication per invocation",
+    "UMI group/component budgets and peak size reporting; streaming components",
+    "SQLite unique raw UMI counters across chunks",
+    "Repeat-mean ratio selection and deterministic representative repeat",
+    "Mean/SD reports and separate analytical count expectations"
+  ],
+  "strategy_decision": "docs/archive/testing/m3-20261009/strategy/decision.json",
+  "performance": "docs/archive/testing/m3-20261009/performance/summary.json",
+  "count_comparison": {
+    "pi4": "docs/archive/testing/m3-20261009/performance/pi4/count-comparison.json",
+    "million": "docs/archive/testing/m3-20261009/performance/million/count-comparison.json",
+    "synthetic": "docs/archive/testing/m3-20261009/performance/synthetic/count-comparison.json"
+  },
+  "additional_test_evidence": {
+    "tests": 82,
+    "python": "3.9.23",
+    "result": "OK",
+    "elapsed_seconds": 18.191,
+    "source": "docs/archive/testing/m4-20261009/preflight",
+    "log": "docs/archive/testing/m4-20261009/tests39-preflight.log"
+  },
+  "remaining_at_m3_completion": [
+    "M4 candidate/final package, report opening, migration and release readiness audit"
+  ],
+  "remaining": [],
+  "final_release": "tests/validation/release.json"
+}

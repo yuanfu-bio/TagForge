@@ -6,14 +6,16 @@ from pathlib import Path
 from . import __version__
 from .barcode_correct import correct_sample
 from .config import TagForgeConfig
+from .checkpoint import (expected_outputs, invalidate, pending_publication, prepare_publication,
+                         prepare_stage, publish_stage, require_dependencies, sample_lock,
+                         stage_current, stage_request, stage_plan, manifest_path, migrate_manifest)
 from .downsample import downsample_sample
 from .extract import extract_sample
 from .external_tools import check_external_tools
-from .io_utils import output_ready, sample_dirs, step_complete, touch_checkpoint
+from .io_utils import sample_dirs, write_progress
 from .logging_utils import sample_logger
 from .matrix import matrix_sample, pair_mapping_sample
-from .reports import batch_report, report_sample, write_summary
-from .sparse_matrix import pair_path, summary_path
+from .reports import _completed_summary_samples, _summary_lock, batch_report, report_sample
 from .umi_correct import dedup_sample
 
 
@@ -21,33 +23,28 @@ STEP_FUNCS = {"extract": extract_sample, "correct": correct_sample, "dedup": ded
               "matrix": matrix_sample, "pair-map": pair_mapping_sample, "downsample": downsample_sample, "report": report_sample}
 
 
-def expected_outputs(config: TagForgeConfig, sample: str, step: str):
-    d = sample_dirs(config.output_dir, sample)
-    return {
-        "extract": [
-            d["extracted"] / f"{sample}.extracted.parquet",
-            d["extracted"] / f"{sample}.extraction_stats.tsv",
-        ],
-        "correct": [d["detail"] / f"{sample}.valid_reads.parquet", d["corrected"] / f"{sample}.barcode_correction_stats.tsv"] + ([d["corrected"] / f"{sample}.barcode_correction_trace.parquet"] if config.trace_enabled else []),
-        "dedup": [d["detail"] / f"{sample}.molecule_detail.parquet"] + (
-            [d["detail"] / f"{sample}.molecule_detail.rmMP.parquet", d["detail"] / f"{sample}.pi_seq_qc.tsv"] if config.pi_seq_enabled else []),
-        "matrix": [pair_path(d["matrix"], sample), summary_path(d["matrix"], sample)],
-        "pair-map": [d["matrix"] / f"{sample}.pb_cb_mapping.tsv.gz"] + (
-            [d["matrix"] / f"{sample}.pb_cb_map.tsv.gz",
-             d["matrix"] / f"{sample}.cb_pb_counts.tsv.gz",
-             d["matrix"] / f"{sample}.cb_pb_count_distribution.tsv",
-             d["matrix"] / f"{sample}.cb_observed_correction.tsv.gz"]
-            if getattr(config, "pb_cb_enabled", False) else []),
-        "downsample": [
-            d["downsample"] / f"{sample}.downsample_metrics.tsv",
-            d["downsample"] / f"{sample}.optimal_saturation_point.tsv",
-            d["downsample"] / f"{sample}.downsample.html",
-        ],
-        "report": [d["report"] / f"{sample}.report.xlsx", d["report"] / f"{sample}.report.html"],
-    }[step]
+def _canonical_result(value, source_root, destination_root):
+    if isinstance(value, Path):
+        try:
+            return destination_root / value.relative_to(source_root)
+        except ValueError:
+            return value
+    if isinstance(value, list):
+        return [_canonical_result(item, source_root, destination_root) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_canonical_result(item, source_root, destination_root) for item in value)
+    return value
 
 
 def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = False):
+    with sample_lock(config, sample):
+        return _run_step_locked(config, sample, step, overwrite)
+
+
+def _run_step_locked(config: TagForgeConfig, sample: str, step: str, overwrite: bool = False):
+    if step == "downsample" and not config.downsample_enabled:
+        from .config import ConfigError
+        raise ConfigError("downsample.enabled is false; enable it to run this stage")
     dirs = sample_dirs(config.output_dir, sample)
     logger = sample_logger(sample, dirs["logs"] / f"{sample}.pipeline.log")
     logger.info("tagforge\tversion=%s\tstep=%s\telapsed_time=0", __version__, step)
@@ -61,20 +58,44 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
             else f"umi_tools-UMIClusterer:{versions.umi_tools},workers={config.umi_workers or config.threads}"
         )
         logger.info("%s\tbackend=%s\telapsed_time=0", step, backend)
-    checkpoint = dirs["checkpoint"] / f"{step}.done"
+    checkpoint = manifest_path(config, sample, step)
     outputs = expected_outputs(config, sample, step)
-    overwrite = overwrite or config.overwrite
-    if step_complete(checkpoint, outputs, overwrite, __version__):
+    overwrite = overwrite or config.overwrite or not config.resume_enabled
+    if not overwrite and stage_current(config, sample, step):
+        migrate_manifest(config, sample, step)
         logger.info("%s\tskipped_checkpoint\telapsed_time=0", step)
+        if step == "extract":
+            preview = dirs["extracted"] / f"{sample}.extracted.preview.tsv"
+            if config.extraction_preview_reads > 0 and not preview.exists():
+                from itertools import islice
+                from .columnar import open_records
+                from .extract import extract_fields
+                from .io_utils import write_tsv
+                write_tsv(preview, extract_fields(config), islice(open_records(outputs[0]), config.extraction_preview_reads))
+            elif not config.extraction_preview_reads:
+                preview.unlink(missing_ok=True)
+        write_progress(dirs["logs"] / f"{sample}.progress.json", sample, step, {"status": "skipped"})
         return outputs, "skipped"
+    require_dependencies(config, sample, step)
+    request = stage_request(config, sample, step)
+    if checkpoint.exists() or (dirs["checkpoint"] / f"{step}.done").exists():
+        logger.info("%s\tcheckpoint_invalidated\treason=inputs_config_or_output_changed", step)
+    invalidate(config, sample, step)
+    staged, work = prepare_stage(config, sample, step, request, overwrite=overwrite)
+    write_progress(dirs["logs"] / f"{sample}.progress.json", sample, step, {"status": "running"})
     start = time.monotonic(); logger.info("%s\tstart\telapsed_time=0", step)
     try:
-        result = (
-            extract_sample(config, sample, resume=not overwrite)
-            if step == "extract" else
-            correct_sample(config, sample, resume=not overwrite)
-            if step == "correct" else STEP_FUNCS[step](config, sample)
-        )
+        publication = pending_publication(work)
+        if publication:
+            result = outputs
+            logger.info("%s\trecovering_publication\tgeneration=%s", step, publication["generation"])
+        else:
+            result = (
+                extract_sample(staged, sample, resume=config.resume_enabled, keep_resume=True)
+                if step == "extract" else
+                correct_sample(staged, sample, resume=config.resume_enabled, keep_resume=True)
+                if step == "correct" else STEP_FUNCS[step](staged, sample)
+            )
         if step == "extract" and isinstance(result, tuple) and isinstance(result[1], dict):
             summary = result[1]
             logger.info(
@@ -162,12 +183,17 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
                 summary.get("sqlite_cache_mb", "NA"), summary["aggregation_seconds"],
                 summary["clustering_seconds"], summary["wall_seconds"], time.monotonic() - start,
             )
-        if not all(output_ready(path) for path in outputs):
-            raise RuntimeError(f"Step {step} did not create all expected outputs")
-        touch_checkpoint(checkpoint, __version__)
+        publication = publication or prepare_publication(config, staged, sample, step, request, work)
+        publish_stage(config, staged, sample, step, request, work, publication)
         logger.info("%s\tfinish\telapsed_time=%.3f", step, time.monotonic() - start)
+        write_progress(dirs["logs"] / f"{sample}.progress.json", sample, step,
+                       {"status": "completed", "elapsed_seconds": round(time.monotonic() - start, 3)})
+        outputs = expected_outputs(config, sample, step)
+        result = _canonical_result(result, staged.output_dir / sample, config.output_dir / sample)
         return result, "completed"
     except Exception:
+        write_progress(dirs["logs"] / f"{sample}.progress.json", sample, step,
+                       {"status": "failed", "elapsed_seconds": round(time.monotonic() - start, 3)})
         logger.exception("%s\tfailed\telapsed_time=%.3f", step, time.monotonic() - start)
         raise
 
@@ -175,19 +201,20 @@ def run_step(config: TagForgeConfig, sample: str, step: str, overwrite: bool = F
 def run_pipeline(config: TagForgeConfig, sample_names, overwrite: bool = False):
     versions = check_external_tools()
     for sample in sample_names:
-        dirs = sample_dirs(config.output_dir, sample)
-        logger = sample_logger(sample, dirs["logs"] / f"{sample}.pipeline.log")
-        logger.info(
-            "dependencies\tcutadapt=%s\tumi_tools=%s\telapsed_time=0",
-            versions.cutadapt, versions.umi_tools,
-        )
-        steps = ("extract", "correct", "dedup", "pair-map") if getattr(config, "pb_cb_enabled", False) else (
-            "extract", "correct", "dedup", "matrix", "downsample", "report")
-        for step in steps:
-            run_step(config, sample, step, overwrite)
-            # Array tasks publish completed samples immediately; the writer
-            # rescans all configured checkpoints under an interprocess lock.
-            if step == "downsample":
-                write_summary(config)
-    if not getattr(config, "pb_cb_enabled", False):
-        batch_report(config, sample_names)
+        with sample_lock(config, sample):
+            dirs = sample_dirs(config.output_dir, sample)
+            if not config.quick_test_read_details:
+                for suffix in ("quick_test.read_qc.tsv", "quick_test.sampled_read_ids.txt"):
+                    (dirs["report"] / f"{sample}.{suffix}").unlink(missing_ok=True)
+            logger = sample_logger(sample, dirs["logs"] / f"{sample}.pipeline.log")
+            logger.info(
+                "dependencies\tcutadapt=%s\tumi_tools=%s\telapsed_time=0",
+                versions.cutadapt, versions.umi_tools,
+            )
+            steps = stage_plan(config)
+            for step in steps:
+                _run_step_locked(config, sample, step, overwrite)
+    # Publish batch workbooks once per invocation, including one-sample array
+    # tasks, rather than re-reading the entire batch after every sample.
+    with _summary_lock(config.output_dir / ".summary.lock"):
+        batch_report(config, _completed_summary_samples(config))

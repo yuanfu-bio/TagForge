@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import gzip
-import hashlib
 import json
 import os
 import time
@@ -16,10 +15,10 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional
 
 from . import __version__
-from .columnar import ParquetFragmentWriter, parquet_path, parquet_size, record_batches
+from .columnar import ParquetFragmentWriter, parquet_size, record_batches, resolve_table
 from .config import CorrectionConfig, SegmentConfig, TagForgeConfig, ConfigError
 from .extract import decode_method_payload, decode_segment_payload, hamming
-from .io_utils import atomic_text, sample_dirs, tsv_batches, write_tsv
+from .io_utils import atomic_text, sample_dirs, write_progress, write_json, tsv_batches, write_tsv
 from .logging_utils import sample_logger
 
 
@@ -48,6 +47,8 @@ class WhitelistCorrector:
     def __init__(self, values: Iterable[str], config: CorrectionConfig, length: int):
         self.values = tuple(sorted({x.strip().upper() for x in values if x.strip()}))
         self.value_set = set(self.values)
+        if any(len(value) != length for value in self.values):
+            raise ConfigError(f"Whitelist sequences must all have configured length {length}")
         self.config = config
         self.length = length
 
@@ -56,7 +57,13 @@ class WhitelistCorrector:
         raw = raw.upper()
         if not self.config.enabled:
             sequence = raw[anchor:anchor + self.length]
+            if len(sequence) != self.length:
+                return CorrectionResult(raw, sequence, "", "failed", 0, -1, "failed")
             return CorrectionResult(raw, sequence, sequence, "disabled", 0, 0, "disabled")
+        original = raw[anchor:anchor + self.length]
+        if original in self.value_set:
+            # The original exact hit has the unique minimum candidate score.
+            return CorrectionResult(raw, original, original, "valid", 0, 0, "exact")
         candidates = []
         max_shift = self.config.max_shift if self.config.allow_shift else 0
         max_mismatch = self.config.max_mismatch if self.config.allow_mismatch else 0
@@ -233,6 +240,9 @@ TRACE_FIELDS = ["read_id", "segment_name", "target_type", "raw_sequence", "shift
                 "corrected_sequence", "whitelist_hit", "correction_status", "shift_distance",
                 "mismatch_distance", "correction_type"]
 
+REJECTION_REASONS = ("extraction_failed", "barcode_ambiguous", "barcode_invalid",
+                     "annotation_missing", "umi_invalid")
+
 
 def valid_fields(config: TagForgeConfig):
     return [
@@ -243,21 +253,13 @@ def valid_fields(config: TagForgeConfig):
     ]
 
 
-def _correction_fingerprint(config: TagForgeConfig, source: Path) -> str:
-    digest = hashlib.sha256(config.path.read_bytes())
-    dependencies = [source]
-    if config.fb_info is not None:
-        dependencies.append(config.fb_info)
-    dependencies.extend(
-        segment.whitelist for segment in config.segments if segment.whitelist is not None
-    )
-    for path in dependencies:
-        stat = path.stat()
-        digest.update(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode())
-    return digest.hexdigest()
+def _correction_fingerprint(config: TagForgeConfig, source: Path, sample_name: str) -> str:
+    from .checkpoint import resume_fingerprint
+    return resume_fingerprint(config, sample_name, "correct")
 
 
-def _correct_row(row, config, correctors, annotation, counters, summary):
+def evaluate_extracted_read(row, config, correctors, annotation, counters, summary):
+    """Shared formal/QC read eligibility and exclusive rejection counters."""
     summary["total_reads"] += 1
     segment_columns = {
         "barcode1": config.segment_column("barcode1"),
@@ -276,11 +278,13 @@ def _correct_row(row, config, correctors, annotation, counters, summary):
             + f". Re-run 'tagforge extract --overwrite' with TagForge {__version__}."
         )
     if row["status"] != "success":
+        summary["failure_extraction_failed"] += 1
         return None, []
     summary["extracted_reads"] += 1
     extraction_methods = decode_method_payload(row["methods"], config.segments)
     values = {}
     trace_rows = []
+    ambiguous = False
     for target, col in (("barcode1", segment_columns["barcode1"]), ("barcode2", segment_columns["barcode2"])):
         target_segments = [segment for segment in config.segments if segment.target == target]
         raw_values = decode_segment_payload(row[col], target_segments)
@@ -294,7 +298,8 @@ def _correct_row(row, config, correctors, annotation, counters, summary):
             )
             anchor = min(extra, segment.start or 0) if source_method == "fixed" else 0
             result = correctors[segment.name].correct(raw_values.get(segment.name, ""), anchor)
-            corrected_values.append(result.corrected_sequence)
+            ambiguous |= result.ambiguous
+            corrected_values.append(result.corrected_sequence if result.success else "")
             count = counters[segment.name]
             count["extracted_reads"] += 1
             count[result.correction_type] += 1
@@ -325,11 +330,23 @@ def _correct_row(row, config, correctors, annotation, counters, summary):
     umi_values = decode_segment_payload(row[segment_columns["umi"]], umi_segments)
     umi = "".join(umi_values.get(segment.name, "") for segment in umi_segments)
     fb_name = values["barcode2"] if getattr(config, "barcode2_sequence_only", False) else annotation.get(values["barcode2"], "")
+    if values["barcode2"]:
+        summary["barcode2_whitelist_reads"] += 1
+        if not fb_name:
+            summary["missing_annotation:" + values["barcode2"]] += 1
     if values["barcode1"]:
         summary["barcode1_valid"] += 1
     if values["barcode2"] and fb_name:
         summary["barcode2_valid"] += 1
-    if values["barcode1"] and fb_name and umi and "N" not in umi:
+    umi_valid = all(len(umi_values.get(segment.name, "")) == segment.length
+                    for segment in umi_segments) and bool(umi) and set(umi) <= set("ACGT")
+    if not values["barcode1"] or not values["barcode2"]:
+        summary["failure_barcode_ambiguous" if ambiguous else "failure_barcode_invalid"] += 1
+    elif not fb_name:
+        summary["failure_annotation_missing"] += 1
+    elif not umi_valid:
+        summary["failure_umi_invalid"] += 1
+    else:
         summary["combined_valid"] += 1
         return {
             "read_id": row["read_id"], config.target_name("barcode1"): values["barcode1"],
@@ -338,6 +355,10 @@ def _correct_row(row, config, correctors, annotation, counters, summary):
             config.target_name("umi"): umi, "correction_summary": "valid",
         }, trace_rows
     return None, trace_rows
+
+
+# Keep the existing batch entry point while QC uses the same evaluator.
+_correct_row = evaluate_extracted_read
 
 
 def _correction_stats(config, counters, summary):
@@ -369,6 +390,9 @@ def _correction_stats(config, counters, summary):
         {"scope": f"final_{config.target_name('barcode2')}", "target_type": _target_display(config, "barcode2"), "total_reads": total, "valid_reads": summary["barcode2_valid"], "valid_rate": summary["barcode2_valid"] / total if total else 0},
         {"scope": "combined", "target_type": "all", "total_reads": total, "valid_reads": summary["combined_valid"], "valid_rate": summary["combined_valid"] / total if total else 0},
     ])
+    stat_rows.extend({"scope": f"failure:{reason}", "target_type": "all", "total_reads": total,
+                      "invalid_reads": summary[f"failure_{reason}"]}
+                     for reason in REJECTION_REASONS)
     all_fields = ["scope", "target_type", "total_reads", "extracted_reads", "valid_reads", "invalid_reads", "valid_rate",
                   "exact_count", "mismatch_only_count", "shift_only_count", "shift_and_mismatch_count", "failed_count", "disabled_count"]
     dynamic = sorted({k for row in stat_rows for k in row if k not in all_fields})
@@ -379,7 +403,7 @@ def _correction_stats(config, counters, summary):
             "linker_barcode_valid_rate", "fixed_extracted_count", "fixed_barcode_valid_count",
             "fixed_barcode_valid_rate",
         )}
-        for row in stat_rows if row.get("scope") not in {
+        for row in stat_rows if not row.get("scope", "").startswith("failure:") and row.get("scope") not in {
             f"final_{config.target_name('barcode1')}",
             f"final_{config.target_name('barcode2')}",
             "combined",
@@ -388,17 +412,14 @@ def _correction_stats(config, counters, summary):
     return all_fields + dynamic, stat_rows, result_summary
 
 
-def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True):
+def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True, *, keep_resume: bool = False):
     dirs = sample_dirs(config.output_dir, sample_name)
-    source = dirs["extracted"] / f"{sample_name}.extracted.parquet"
-    if not source.exists():
-        source = dirs["extracted"] / f"{sample_name}.extracted.tsv.gz"
-    if not source.exists():
-        raise FileNotFoundError(f"Extraction output missing for {sample_name}: {source}")
+    source = resolve_table(dirs["extracted"] / f"{sample_name}.extracted.parquet",
+                           dirs["extracted"] / f"{sample_name}.extracted.tsv.gz")
     trace_parquet = dirs["corrected"] / f"{sample_name}.barcode_correction_trace.parquet"
-    stats_path = dirs["corrected"] / f"{sample_name}.barcode_correction_stats.tsv"
-    valid_parquet = dirs["detail"] / f"{sample_name}.valid_reads.parquet"
-    progress_path = dirs["logs"] / f"{sample_name}.correction_progress.tsv"
+    stats_path = dirs["corrected"] / f"{sample_name}.correction_qc.json"
+    valid_parquet = dirs["corrected"] / f"{sample_name}.valid_reads.parquet"
+    progress_path = dirs["logs"] / f"{sample_name}.progress.json"
     resume_path = dirs["checkpoint"] / f"{sample_name}.correct.resume.json"
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
     annotation = load_fb_annotation(config)
@@ -415,7 +436,7 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     started = time.monotonic()
     previous_elapsed = 0.0
     last_input_fraction = 0.0
-    fingerprint = _correction_fingerprint(config, source)
+    fingerprint = _correction_fingerprint(config, source, sample_name)
     requested_workers = config.barcode_workers or config.threads
     workers = requested_workers
     executor = None
@@ -423,7 +444,7 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
 
     def save_resume():
         state = {
-            "schema": 3, "tagforge_version": __version__, "fingerprint": fingerprint,
+            "schema": 4, "tagforge_version": __version__, "fingerprint": fingerprint,
             "trace_enabled": config.trace_enabled,
             "reads_completed": summary["total_reads"],
             "safe_valid_parts": valid_writer.part,
@@ -443,8 +464,7 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     if resume and resume_path.exists():
         state = json.loads(resume_path.read_text(encoding="utf-8"))
         if (
-            state.get("schema") != 3
-            or state.get("tagforge_version") != __version__
+            state.get("schema") != 4
             or state.get("fingerprint") != fingerprint
             or bool(state.get("trace_enabled")) != config.trace_enabled
         ):
@@ -455,16 +475,19 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         valid_writer = ParquetFragmentWriter(
             valid_parquet, fields, config.chunk_size, resume=True,
             parts=int(state["safe_valid_parts"]),
-        )
+         compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
         trace_writer = (
             ParquetFragmentWriter(trace_parquet, TRACE_FIELDS, config.chunk_size, resume=True,
-                                  parts=int(state["safe_trace_parts"]))
+                                  parts=int(state["safe_trace_parts"]), compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
             if config.trace_enabled else None
         )
         summary.update(state.get("summary", {}))
         for name, values in state.get("segment_counters", {}).items():
             if name in counters:
                 counters[name].update(values)
+        if valid_writer.rows != summary["combined_valid"] or (trace_writer is not None
+            and trace_writer.rows != sum(counter["extracted_reads"] for counter in counters.values())):
+            raise ConfigError("Committed correction rows disagree with resume counters; use --overwrite")
         previous_elapsed = float(state.get("elapsed_seconds", 0.0))
         last_input_fraction = float(state.get("input_fraction", 0.0))
         resumed = True
@@ -477,17 +500,12 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             raise ConfigError(
                 "Untracked correction Parquet dataset cannot be resumed safely. Use --overwrite to restart."
             )
-        valid_writer = ParquetFragmentWriter(valid_parquet, fields, config.chunk_size)
-        trace_writer = (ParquetFragmentWriter(trace_parquet, TRACE_FIELDS, config.chunk_size)
+        valid_writer = ParquetFragmentWriter(valid_parquet, fields, config.chunk_size, compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
+        trace_writer = (ParquetFragmentWriter(trace_parquet, TRACE_FIELDS, config.chunk_size, compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
                         if config.trace_enabled else None)
         resume_path.unlink(missing_ok=True)
         save_resume()
 
-    progress_fields = [
-        "status", "reads_completed", "extracted_reads", "combined_valid_reads",
-        "input_percent", "elapsed_seconds", "reads_per_second", "eta_seconds",
-        "estimated_finish", "resume_skip_percent", "valid_tmp_bytes", "trace_tmp_bytes",
-    ]
 
     def update_progress(status, input_fraction, resume_skip=None):
         elapsed = previous_elapsed + time.monotonic() - started
@@ -511,7 +529,7 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             "valid_tmp_bytes": parquet_size(valid_parquet),
             "trace_tmp_bytes": parquet_size(trace_parquet) if config.trace_enabled else 0,
         }
-        write_tsv(progress_path, progress_fields, [progress])
+        write_progress(progress_path, sample_name, "correct", progress)
         logger.info(
             "correction_progress\treads=%s\textracted_reads=%s\tcombined_valid_reads=%s\t"
             "input_percent=%s\treads_per_second=%s\teta_seconds=%s\t"
@@ -621,9 +639,19 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         valid_writer.close()
         if trace_writer is not None:
             trace_writer.close()
+        save_resume()
         fields, stat_rows, result_summary = _correction_stats(config, counters, summary)
-        write_tsv(stats_path, fields, stat_rows)
-        resume_path.unlink(missing_ok=True)
+        missing_annotation = [{"barcode2_sequence": key.split(":", 1)[1], "reads_count": count}
+                              for key, count in summary.items() if key.startswith("missing_annotation:")]
+        missing_annotation.sort(key=lambda row: (-row["reads_count"], row["barcode2_sequence"]))
+        write_json(stats_path, {"schema": 1, "sample": sample_name, "fields": fields,
+                              "barcode_stats": stat_rows, "annotation": {
+                                  "whitelist_reads": summary["barcode2_whitelist_reads"],
+                                  "not_in_annotation_reads": sum(row["reads_count"] for row in missing_annotation)}})
+        write_tsv(dirs["corrected"] / f"{sample_name}.barcode2_not_in_annotation.tsv.gz",
+                  ["barcode2_sequence", "reads_count"], missing_annotation, config.compression_level)
+        if not keep_resume:
+            resume_path.unlink(missing_ok=True)
         update_progress("completed", 1.0)
     except Exception:
         update_progress("failed", last_input_fraction)
@@ -631,7 +659,8 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     finally:
         if executor is not None:
             executor.shutdown()
-    outputs = [valid_parquet, stats_path] + ([trace_parquet] if config.trace_enabled else [])
+    outputs = [valid_parquet, stats_path,
+               dirs["corrected"] / f"{sample_name}.barcode2_not_in_annotation.tsv.gz"] + ([trace_parquet] if config.trace_enabled else [])
     result_summary["wall_seconds"] = previous_elapsed + time.monotonic() - started
     result_summary["reads_per_second"] = (
         summary["total_reads"] / result_summary["wall_seconds"]
@@ -641,3 +670,20 @@ def correct_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     result_summary["workers"] = workers
     result_summary["chunk_size"] = config.chunk_size
     return outputs, result_summary
+
+
+def correction_qc_path(directory: Path, sample: str):
+    current = directory / f"{sample}.correction_qc.json"
+    legacy = directory / f"{sample}.barcode_correction_stats.tsv"
+    return legacy if not current.exists() and legacy.exists() else current
+
+
+def load_correction_stats(path: Path):
+    if path.suffix != ".json":
+        from .io_utils import open_tsv
+        return list(open_tsv(path))
+    payload = json.loads(path.read_text())
+    if payload.get("schema") != 1 or not isinstance(payload.get("barcode_stats"), list):
+        raise ConfigError(f"Invalid correction QC: {path}")
+    return [{key: str(row.get(key, "")) for key in payload["fields"]}
+            for row in payload["barcode_stats"]]

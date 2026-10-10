@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, Iterator
 
-from .columnar import ParquetFragmentWriter, open_records
+from .columnar import ParquetFragmentWriter, open_records, resolve_table
 from .config import ConfigError, TagForgeConfig
-from .io_utils import atomic_text, open_tsv, sample_dirs, write_tsv
+from .io_utils import atomic_text, open_tsv, sample_dirs, write_progress, write_tsv
 from .logging_utils import ProgressThrottle, sample_logger
 from .pi_seq import filter_pi_seq_molecules
 
@@ -90,17 +90,36 @@ def molecule_fields(config: TagForgeConfig):
     ]
 
 
-def _group_batches(cursor: Iterable[tuple], batch_umis: int, component_max_distance: int | None = None) -> Iterator[list]:
-    """Batch independent UMI components without splitting correction edges."""
+def _group_batches(
+    cursor: Iterable[tuple], batch_umis: int, component_max_distance: int | None = None,
+    *, max_group_umis: int | None = None, max_component_umis: int | None = None,
+    stats: dict | None = None,
+) -> Iterator[list]:
+    """Batch independent components; a connected component may exceed batch_umis.
+
+    Optional budgets reject oversized scopes rather than splitting correction
+    edges. The group budget is checked while consuming the aggregation cursor.
+    """
     batch = []
     batch_size = 0
     key = None
     group = {}
+    stats = stats if stats is not None else {}
+    stats.setdefault("peak_group_umis", 0)
+    stats.setdefault("peak_component_umis", 0)
 
     def add_components(group_key, umi_counts):
-        if component_max_distance is None:
-            return [(group_key, umi_counts)]
-        return [(group_key, component) for component in _umi_components(umi_counts, component_max_distance)]
+        components = (umi_counts,) if component_max_distance is None else _umi_components(umi_counts, component_max_distance)
+        for component in components:
+            size = len(component)
+            stats["peak_component_umis"] = max(stats["peak_component_umis"], size)
+            if max_component_umis is not None and size > max_component_umis:
+                raise ConfigError(
+                    f"UMI component for barcode1={group_key[0]!r}, feature={group_key[1]!r} "
+                    f"has {size} UMIs, exceeding performance.umi_max_component_umis={max_component_umis}. "
+                    "Increase the budget with sufficient memory; connected UMIs cannot be split safely."
+                )
+            yield group_key, component
 
     def add_to_batches(items):
         nonlocal batch, batch_size
@@ -123,7 +142,14 @@ def _group_batches(cursor: Iterable[tuple], batch_umis: int, component_max_dista
             yield from add_to_batches(add_components(key, group))
             group = {}
         key = current
+        if umi not in group and max_group_umis is not None and len(group) >= max_group_umis:
+            raise ConfigError(
+                f"UMI group for barcode1={b1!r}, feature={b2!r} exceeds "
+                f"performance.umi_max_group_umis={max_group_umis} while loading UMI {umi!r}. "
+                "Increase the budget with sufficient memory."
+            )
         group[umi] = n
+        stats["peak_group_umis"] = max(stats["peak_group_umis"], len(group))
     if key is not None:
         yield from add_to_batches(add_components(key, group))
     if batch:
@@ -131,7 +157,7 @@ def _group_batches(cursor: Iterable[tuple], batch_umis: int, component_max_dista
 
 
 def _dedup_batch(batch: list, method: str, max_distance: int):
-    """Process one bounded batch inside a worker process."""
+    """Process a batch; connected components are never split to fit its target."""
     clusterer = _umi_clusterer(method)
     rows = []
     input_reads = 0
@@ -270,10 +296,10 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
     """Deduplicate after GNU sort has made each PB-FB UMI scope contiguous."""
     dirs = sample_dirs(config.output_dir, sample_name)
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
-    source = dirs["detail"] / f"{sample_name}.valid_reads.parquet"
-    if not source.exists(): source = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"
+    source = resolve_table(dirs["corrected"] / f"{sample_name}.valid_reads.parquet",
+                           dirs["corrected"] / f"{sample_name}.valid_reads.tsv.gz")
     parquet_output = dirs["detail"] / f"{sample_name}.molecule_detail.parquet"
-    progress_path = dirs["logs"] / f"{sample_name}.dedup_progress.tsv"
+    progress_path = dirs["logs"] / f"{sample_name}.progress.json"
     started = time.monotonic()
     aggregation_workers = config.umi_aggregation_workers or min(config.threads, 4)
     requested_workers = config.umi_workers or config.threads
@@ -281,17 +307,18 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
     b1_col, b2_col, umi_col = config.target_name("barcode1"), f"{config.target_name('barcode2')}_name", config.target_name("umi")
     reads = total_raw_umis = total_groups = molecules = groups_processed = raw_umis_processed = 0
     batches_submitted = batches_completed = peak_batch_umis = 0
+    group_stats = {"peak_group_umis": 0, "peak_component_umis": 0}
     executor = None
-    sort_dir = Path(tempfile.mkdtemp(prefix=f"{sample_name}.umi-sort.", dir=dirs["tmp"]))
+    sort_dir = Path(tempfile.mkdtemp(prefix=".umi-sort.", dir=dirs["detail"]))
     fields = molecule_fields(config)
     progress_throttle = ProgressThrottle()
-    progress_fields = ["status", "valid_reads", "groups", "total_groups", "raw_umis", "total_raw_umis", "molecules", "batches_submitted", "batches_completed", "requested_workers", "workers", "aggregation_workers", "aggregation_records", "elapsed_seconds"]
 
     def progress(status: str):
         elapsed = time.monotonic() - started
         row = {"status": status, "valid_reads": reads, "groups": total_groups, "total_groups": total_groups, "components": groups_processed, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "molecules": molecules, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "requested_workers": requested_workers, "workers": workers, "aggregation_workers": aggregation_workers, "aggregation_records": total_raw_umis, "elapsed_seconds": f"{elapsed:.2f}"}
         if progress_throttle.allow(status):
-            write_tsv(progress_path, progress_fields, [row])
+            row.update(group_stats)
+            write_progress(progress_path, sample_name, "dedup", row)
             logger.info("dedup_progress\tstatus=%s\tvalid_reads=%s\tgroups=%s\ttotal_groups=%s\traw_umis=%s\ttotal_raw_umis=%s\tmolecules=%s\tbatches_completed=%s\taggregation_records=%s\telapsed_seconds=%s", status, reads, groups_processed, total_groups, raw_umis_processed, total_raw_umis, molecules, batches_completed, total_raw_umis, row["elapsed_seconds"])
 
     def aggregation_progress(status: str, input_reads: int, raw_umis: int, groups: int):
@@ -319,8 +346,10 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
         clustering_started = time.monotonic()
         group_batches = _group_batches(
             _aggregated_tsv_cursor(aggregated_path), config.umi_batch_size, config.umi_max_distance,
+            max_group_umis=config.umi_max_group_umis, max_component_umis=config.umi_max_component_umis,
+            stats=group_stats,
         )
-        output_writer = ParquetFragmentWriter(parquet_output, fields, config.chunk_size)
+        output_writer = ParquetFragmentWriter(parquet_output, fields, config.chunk_size, compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
         def consume(result):
             nonlocal molecules, groups_processed, raw_umis_processed, batches_completed
             rows, group_count, _batch_reads, raw_umi_count = result
@@ -341,10 +370,14 @@ def _dedup_sample_external_sort(config: TagForgeConfig, sample_name: str):
         output_writer.close()
         clustering_seconds = time.monotonic() - clustering_started
         progress("completed")
+        logger.info("dedup_umi_scope\tpeak_group_umis=%s\tpeak_component_umis=%s\tpeak_batch_umis=%s", group_stats["peak_group_umis"], group_stats["peak_component_umis"], peak_batch_umis)
         if config.pi_seq_enabled:
             pi_stats = filter_pi_seq_molecules(config, sample_name, parquet_output)
             logger.info("pi_seq_summary\ttotal_fb_umis=%s\tmulti_pi_ratio=%s\tmp_ratio=%s", pi_stats["total_fb_umis"], pi_stats["multi_pi_ratio"], pi_stats["mp_ratio"])
-        return parquet_output, {"valid_reads": reads, "molecules": molecules, "duplicates": reads - molecules, "groups": total_groups, "total_groups": total_groups, "components": groups_processed, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "requested_workers": requested_workers, "workers": workers, "requested_aggregation_workers": aggregation_workers, "aggregation_workers": aggregation_workers, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "umi_batch_size": config.umi_batch_size, "peak_batch_umis": peak_batch_umis, "aggregation_backend": "external_sort", "sort_memory_mb": config.umi_sort_memory_mb, "aggregation_seconds": aggregation_seconds, "clustering_seconds": clustering_seconds, "wall_seconds": time.monotonic() - started}
+        return parquet_output, {"valid_reads": reads, "molecules": molecules, "duplicates": reads - molecules, "groups": total_groups, "total_groups": total_groups, "components": groups_processed, "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis, "requested_workers": requested_workers, "workers": workers, "requested_aggregation_workers": aggregation_workers, "aggregation_workers": aggregation_workers, "batches_submitted": batches_submitted, "batches_completed": batches_completed, "umi_batch_size": config.umi_batch_size, "peak_batch_umis": peak_batch_umis, **group_stats, "aggregation_backend": "external_sort", "sort_memory_mb": config.umi_sort_memory_mb, "aggregation_seconds": aggregation_seconds, "clustering_seconds": clustering_seconds, "wall_seconds": time.monotonic() - started}
+    except Exception:
+        progress("failed")
+        raise
     finally:
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
@@ -355,12 +388,12 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         return _dedup_sample_external_sort(config, sample_name)
     dirs = sample_dirs(config.output_dir, sample_name)
     logger = sample_logger(sample_name, dirs["logs"] / f"{sample_name}.pipeline.log")
-    source = dirs["detail"] / f"{sample_name}.valid_reads.parquet"
-    if not source.exists(): source = dirs["detail"] / f"{sample_name}.valid_reads.tsv.gz"
+    source = resolve_table(dirs["corrected"] / f"{sample_name}.valid_reads.parquet",
+                           dirs["corrected"] / f"{sample_name}.valid_reads.tsv.gz")
     parquet_output = dirs["detail"] / f"{sample_name}.molecule_detail.parquet"
-    progress_path = dirs["logs"] / f"{sample_name}.dedup_progress.tsv"
-    db_path = dirs["tmp"] / f"{sample_name}.umi_counts.sqlite3"
-    db_path.unlink(missing_ok=True)
+    progress_path = dirs["logs"] / f"{sample_name}.progress.json"
+    scratch = Path(tempfile.mkdtemp(prefix=".umi-sqlite.", dir=dirs["detail"]))
+    db_path = scratch / "umi_counts.sqlite3"
     started = time.monotonic()
     aggregation_started = started
     connection = sqlite3.connect(db_path)
@@ -382,15 +415,8 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
     raw_umis_processed = 0
     batches_submitted = 0
     batches_completed = 0
+    group_stats = {"peak_group_umis": 0, "peak_component_umis": 0}
     clustering_started = started
-    progress_fields = [
-        "status", "valid_reads", "groups", "total_groups", "group_percent",
-        "raw_umis", "total_raw_umis", "molecules", "batches_submitted",
-        "batches_completed", "pending_batches", "requested_workers", "workers",
-        "aggregation_workers", "sqlite_rows_written",
-        "elapsed_seconds", "valid_reads_per_second", "groups_per_second",
-        "eta_seconds", "estimated_finish",
-    ]
     progress_throttle = ProgressThrottle()
 
     def record_progress(status: str, pending_batches: int = 0):
@@ -400,8 +426,8 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         valid_rate = reads / (now - started) if now > started else 0.0
         rate = groups_processed / elapsed if elapsed else 0.0
         fraction = (
-            groups_processed / total_groups
-            if total_groups else 0.0 if status in {"aggregating", "aggregated"} else 1.0
+            raw_umis_processed / total_raw_umis
+            if total_raw_umis else 0.0 if status in {"aggregating", "aggregated"} else 1.0
         )
         eta = (
             elapsed * (1.0 - fraction) / fraction
@@ -412,8 +438,8 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
             if eta else ""
         )
         row = {
-            "status": status, "valid_reads": reads, "groups": groups_processed,
-            "total_groups": total_groups, "group_percent": f"{fraction * 100:.2f}",
+            "status": status, "valid_reads": reads, "groups": total_groups,
+            "total_groups": total_groups, "components": groups_processed, "raw_umi_percent": f"{fraction * 100:.2f}",
             "raw_umis": raw_umis_processed, "total_raw_umis": total_raw_umis,
             "molecules": molecules, "batches_submitted": batches_submitted,
             "batches_completed": batches_completed, "pending_batches": pending_batches,
@@ -422,28 +448,29 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
             "sqlite_rows_written": total_raw_umis,
             "elapsed_seconds": f"{elapsed:.2f}",
             "valid_reads_per_second": f"{valid_rate:.2f}",
-            "groups_per_second": f"{rate:.3f}",
+            "components_per_second": f"{rate:.3f}",
             "eta_seconds": f"{eta:.2f}" if eta else "",
             "estimated_finish": finish,
         }
         if not progress_throttle.allow(status):
             return
-        write_tsv(progress_path, progress_fields, [row])
+        row.update(group_stats)
+        write_progress(progress_path, sample_name, "dedup", row)
         logger.info(
             "dedup_progress\tstatus=%s\tvalid_reads=%s\tgroups=%s\t"
-            "total_groups=%s\tgroup_percent=%s\traw_umis=%s\ttotal_raw_umis=%s\t"
+            "total_groups=%s\traw_umi_percent=%s\traw_umis=%s\ttotal_raw_umis=%s\t"
             "molecules=%s\tbatches_submitted=%s\tbatches_completed=%s\t"
             "pending_batches=%s\trequested_workers=%s\tworkers=%s\t"
             "aggregation_workers=%s\tsqlite_rows_written=%s\t"
-            "elapsed_seconds=%s\tvalid_reads_per_second=%s\tgroups_per_second=%s\t"
+            "elapsed_seconds=%s\tvalid_reads_per_second=%s\tcomponents_per_second=%s\t"
             "eta_seconds=%s\testimated_finish=%s",
             row["status"], row["valid_reads"], row["groups"], row["total_groups"],
-            row["group_percent"], row["raw_umis"], row["total_raw_umis"],
+            row["raw_umi_percent"], row["raw_umis"], row["total_raw_umis"],
             row["molecules"], row["batches_submitted"], row["batches_completed"],
             row["pending_batches"], row["requested_workers"], row["workers"],
             row["aggregation_workers"], row["sqlite_rows_written"],
             row["elapsed_seconds"], row["valid_reads_per_second"],
-            row["groups_per_second"], row["eta_seconds"] or "NA",
+            row["components_per_second"], row["eta_seconds"] or "NA",
             row["estimated_finish"] or "NA",
         )
     try:
@@ -531,9 +558,14 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
             for future in done:
                 write_aggregated(future.result())
         aggregation_seconds = time.monotonic() - aggregation_started
+        total_raw_umis = connection.execute("SELECT COUNT(*) FROM counts").fetchone()[0]
         total_groups = connection.execute("SELECT COUNT(*) FROM (SELECT 1 FROM counts GROUP BY b1,b2)").fetchone()[0]
         cursor = connection.execute("SELECT b1,b2,umi,n FROM counts ORDER BY b1,b2")
-        group_batches = _group_batches(cursor, config.umi_batch_size)
+        group_batches = _group_batches(
+            cursor, config.umi_batch_size, config.umi_max_distance,
+            max_group_umis=config.umi_max_group_umis, max_component_umis=config.umi_max_component_umis,
+            stats=group_stats,
+        )
         peak_batch_umis = 0
         clustering_started = time.monotonic()
 
@@ -560,7 +592,7 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         )
         record_progress("aggregated", 0)
 
-        output_writer = ParquetFragmentWriter(parquet_output, fields, config.chunk_size)
+        output_writer = ParquetFragmentWriter(parquet_output, fields, config.chunk_size, compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
 
         def consume(result, pending_batches: int = 0):
             nonlocal molecules, groups_processed, raw_umis_processed, batches_completed
@@ -597,6 +629,7 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         record_progress("completed", 0)
 
         clustering_seconds = time.monotonic() - clustering_started
+        logger.info("dedup_umi_scope\tpeak_group_umis=%s\tpeak_component_umis=%s\tpeak_batch_umis=%s", group_stats["peak_group_umis"], group_stats["peak_component_umis"], peak_batch_umis)
     except Exception:
         record_progress("failed", 0)
         raise
@@ -606,8 +639,7 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
         connection.close()
-        db_path.unlink(missing_ok=True)
-        Path(str(db_path) + "-journal").unlink(missing_ok=True)
+        shutil.rmtree(scratch)
     wall_seconds = time.monotonic() - started
     if config.pi_seq_enabled:
         pi_stats = filter_pi_seq_molecules(config, sample_name, parquet_output)
@@ -616,7 +648,8 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         "valid_reads": reads,
         "molecules": molecules,
         "duplicates": reads - molecules,
-        "groups": groups_processed,
+        "groups": total_groups,
+        "components": groups_processed,
         "total_groups": total_groups,
         "raw_umis": raw_umis_processed,
         "total_raw_umis": total_raw_umis,
@@ -628,6 +661,7 @@ def dedup_sample(config: TagForgeConfig, sample_name: str):
         "batches_completed": batches_completed,
         "umi_batch_size": config.umi_batch_size,
         "peak_batch_umis": peak_batch_umis,
+        **group_stats,
         "sqlite_cache_mb": config.umi_sqlite_cache_mb,
         "aggregation_seconds": aggregation_seconds,
         "clustering_seconds": clustering_seconds,

@@ -6,12 +6,12 @@ project:
 
 samples:
   auto:
-    raw_dir: examples/small_fastq
+    raw_dir: tests/fixtures/small_fastq/raw
     r1: "{sample}_raw_1.fq.gz"
     r2: "{sample}_raw_2.fq.gz"
 
 barcode2_annotation:
-  fb_info: examples/FB_info.tsv
+  fb_info: tests/fixtures/small_fastq/config/FB_info.tsv
   id_column: FB_ID
   sequence_column: sequence
   name_column: antibody_name
@@ -43,7 +43,7 @@ barcode1:
       right_linker: AGGTC
       start: 0
       length: 8
-      whitelist: examples/CELL_WL.txt
+      whitelist: tests/fixtures/small_fastq/config/CELL_WL.txt
 
 barcode2:
   name: FB
@@ -53,7 +53,7 @@ barcode2:
       method: fixed
       start: 6
       length: 6
-      whitelist: examples/FB_WL.txt
+      whitelist: tests/fixtures/small_fastq/config/FB_WL.txt
       correction:
         max_shift: 0
         allow_shift: false
@@ -73,18 +73,19 @@ downsample:
   enabled: true
   ratios: auto
   random_seed: 12345
-  repeats: 1
 
 quick_test:
   enabled: true
   reads: 10000
 
+output:
+  quick_test_read_details: false
 performance:
   threads: 2
   # Barcode whitelist correction is parallelized by extracted-read chunks.
   # Omit barcode_workers to use the same value as threads.
   # barcode_workers: 2
-  # Downsample ratio/repeat jobs use forked processes; omit to use threads.
+  # Downsample ratio jobs use forked processes; omit to use threads.
   # downsample_workers: 2
   # Omit umi_workers to use the same value as threads. Lower it independently
   # when UMI-tools worker memory, rather than CPU, is the limiting resource.
@@ -95,10 +96,15 @@ performance:
   # umi_sort_memory_mb: 512
   # umi_workers: 2
   umi_batch_size: 5000
+  # Batch size is a target, not a hard bound on connected UMI components.
+  # Optional budgets stop with the barcode/feature causing the overflow.
+  # umi_max_group_umis: 1000000
+  # umi_max_component_umis: 100000
   umi_sqlite_cache_mb: 64
   chunk_size: 10000
-  extraction_preview_reads: 1000
-  compression_level: 3
+  extraction_preview_reads: 0
+  parquet_compression: snappy  # snappy (default) or zstd
+  compression_level: 3  # gzip, and Parquet only when using zstd
 
 resume:
   enabled: true

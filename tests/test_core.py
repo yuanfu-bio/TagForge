@@ -15,7 +15,7 @@ from tagforge.config import ConfigError, CorrectionConfig, SegmentConfig, defaul
 from tagforge.downsample import _analysis_ratios, calculate_metrics
 from tagforge.extract import decode_method_payload, decode_segment_payload, extract_segment
 from tagforge.fastq import _physical_position, open_text, paired_fastq, paired_fastq_batches
-from tagforge.io_utils import sample_dirs, touch_checkpoint
+from tagforge.io_utils import checkpoint_version, sample_dirs, touch_checkpoint
 from tagforge.matrix import _observed_cb_aliases, pair_mapping_sample
 from tagforge.pi_seq import filter_pi_seq_molecules
 from tagforge.reports import write_summary
@@ -53,6 +53,8 @@ class CoreTests(unittest.TestCase):
                 handle.write("PB1\tF1\tU2\t9\t1\nPB2\tF1\tU2\t1\t1\n")
                 handle.write("PB1\tF1\tU3\t5\t1\nPB2\tF1\tU3\t5\t1\n")
             qc = filter_pi_seq_molecules(config, "sample", source)
+            self.assertFalse((root / "sample/08_tmp").exists())
+            self.assertFalse(list(dirs["detail"].glob(".pi-seq.*")))
             self.assertEqual(qc["mp_ratio"], "0.666667")
             self.assertEqual(qc["dominant_ratio"], "0.500000")
             self.assertEqual(qc["removed_ratio"], "0.333333")
@@ -111,6 +113,11 @@ class CoreTests(unittest.TestCase):
             ("AATG", "AACG", 3, 100, "hamming_1"),
             ("AANG", "AACG", 2, 100, "n_wildcard"),
         ])
+
+    def test_equal_support_cbs_cannot_alias_each_other_at_ratio_one(self):
+        self.assertEqual(_observed_cb_aliases([("AAAA", 5), ("AAAC", 5)], 2, 1), [])
+        self.assertEqual(_observed_cb_aliases([("AAAA", 6), ("AAAC", 5)], 2, 1),
+                         [("AAAC", "AAAA", 5, 6, "hamming_1")])
 
     def test_pb_cb_config_requires_raw_cb_without_whitelist(self):
         with tempfile.TemporaryDirectory() as td:
@@ -176,9 +183,11 @@ umi:
         root = Path(__file__).parents[1]
         pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
         setup = (root / "setup.py").read_text(encoding="utf-8")
-        self.assertEqual(__version__, "0.1.13")
-        self.assertIn(f'version = "{__version__}"', pyproject)
-        self.assertIn(f'version="{__version__}"', setup)
+        self.assertRegex(__version__, r"^\d+\.\d+\.\d+(?:rc\d+)?$")
+        self.assertIn('dynamic = ["version"]', pyproject)
+        self.assertIn('version = {attr = "tagforge.__version__"}', pyproject)
+        self.assertNotIn('version=', setup)
+        self.assertIn('setup()', setup)
 
     def test_fixed_and_linker_extraction(self):
         fixed = SegmentConfig("x", "umi", "R1", "fixed", 3, start=2)
@@ -192,7 +201,7 @@ umi:
         def exact_linker(sequence, motif, max_mismatch, start=0):
             position = sequence.find(motif, start)
             return None if position < 0 else position
-        def closest_pair(sequence, left, right, max_mismatch):
+        def closest_pair(sequence, left, right, max_mismatch, **_kwargs):
             lefts = [i for i in range(len(sequence)) if sequence.startswith(left, i)]
             rights = [i for i in range(len(sequence)) if sequence.startswith(right, i)]
             pairs = [(r - (l + len(left)), l, r) for l in lefts for r in rights if r >= l + len(left)]
@@ -350,25 +359,29 @@ umi:
         self.assertEqual(_analysis_ratios(config)[0], 0.0)
         self.assertEqual(_analysis_ratios(config)[-1], 1.0)
 
-    def test_summary_rebuilds_completed_samples_in_config_order(self):
+    @patch("tagforge.reports.stage_current", side_effect=lambda config, sample, step, _memo=None:
+           (config.output_dir / sample / "00_logs/checkpoints/downsample.done").is_file())
+    @patch("tagforge.reports.selected_summary_path", side_effect=lambda config, sample:
+           config.output_dir / sample / "04_matrix" / f"{sample}.raw_matrix_summary.json")
+    def test_summary_rebuilds_completed_samples_in_config_order(self, *_mocks):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "02_output"
             config = SimpleNamespace(output_dir=root, samples=[SimpleNamespace(sample="alpha"), SimpleNamespace(sample="zeta")], segments=[SimpleNamespace(name="CELL", target="barcode1"), SimpleNamespace(name="FB", target="barcode2")], target_name=lambda target: {"barcode1": "CELL", "barcode2": "FB"}[target])
 
             def complete(sample, feature):
                 base = root / sample
-                stats = base / "03_corrected" / f"{sample}.barcode_correction_stats.tsv"
+                stats = base / "02_corrected" / f"{sample}.barcode_correction_stats.tsv"
                 stats.parent.mkdir(parents=True)
                 stats.write_text("scope\ttotal_reads\tvalid_rate\nCELL\t100\t0.9\nFB\t100\t0.8\ncombined\t100\t0.7\n", encoding="utf-8")
-                point = base / "06_downsample" / f"{sample}.optimal_saturation_point.tsv"
+                point = base / "05_downsample" / f"{sample}.optimal_saturation_point.tsv"
                 point.parent.mkdir(parents=True)
-                point.write_text("sample\toptimal_downsample_ratio\tmax_sequencing_saturation\treads_sampled\tumi_types\tumi_detected_once\tduplication_ratio\n" + f"{sample}\t0.5\t60\t50\t20\t8\t30\n", encoding="utf-8")
+                point.write_text("sample\toptimal_downsample_ratio\tmax_non_singleton_molecule_fraction\treads_sampled\tumi_types\tumi_detected_once\tsequencing_saturation\tduplication_ratio\n" + f"{sample}\t0.5\t60\t50\t20\t8\t30\t30\n", encoding="utf-8")
                 summary = base / "04_matrix" / f"{sample}.raw_matrix_summary.json"
                 summary.parent.mkdir(parents=True)
                 summary.write_text(json.dumps({"barcode_count": 1, "feature_counts": {feature: 1}, "pi_seq": {}}), encoding="utf-8")
-                checkpoint = base / "01_checkpoint" / "downsample.done"
+                checkpoint = base / "00_logs/checkpoints" / "downsample.done"
                 checkpoint.parent.mkdir(parents=True)
-                touch_checkpoint(checkpoint, __version__)
+                touch_checkpoint(checkpoint, checkpoint_version(__version__, "downsample"))
 
             complete("zeta", "Z_feature")
             _, samples = write_summary(config)

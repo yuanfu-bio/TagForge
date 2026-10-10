@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .columnar import ParquetFragmentWriter, open_records
@@ -19,8 +20,9 @@ def filter_pi_seq_molecules(config, sample_name: str, source: Path):
     """
     dirs = sample_dirs(config.output_dir, sample_name)
     qc_path = dirs["detail"] / f"{sample_name}.pi_seq_qc.tsv"
-    raw_path = dirs["tmp"] / f"{sample_name}.pi_seq_molecules.tsv"
-    sorted_path = dirs["tmp"] / f"{sample_name}.pi_seq_molecules.sorted.tsv"
+    scratch = Path(tempfile.mkdtemp(prefix=".pi-seq.", dir=dirs["detail"]))
+    raw_path = scratch / "molecules.tsv"
+    sorted_path = scratch / "molecules.sorted.tsv"
     filtered_parquet = dirs["detail"] / f"{sample_name}.molecule_detail.rmMP.parquet"
     pb_col = config.target_name("barcode1")
     fb_col = f"{config.target_name('barcode2')}_name"
@@ -37,13 +39,13 @@ def filter_pi_seq_molecules(config, sample_name: str, source: Path):
         sort = shutil.which("sort")
         if sort is None:
             raise ConfigError("PI-seq multi-PB filtering requires GNU sort in PATH")
-        command = [sort, "--temporary-directory", str(dirs["tmp"]), "--field-separator", "\t",
+        command = [sort, "--temporary-directory", str(scratch), "--field-separator", "\t",
                    "--key", "1,1", "--key", "2,2", "--key", "4,4nr", "--key", "3,3", str(raw_path)]
         with sorted_path.open("w", encoding="utf-8", newline="") as handle:
             subprocess.run(command, check=True, stdout=handle)
 
         total_fb_umis = multi_pi_fb_umis = dominant_multi_pi_fb_umis = retained_molecules = 0
-        writer = ParquetFragmentWriter(filtered_parquet, fields, getattr(config, "chunk_size", 200000))
+        writer = ParquetFragmentWriter(filtered_parquet, fields, getattr(config, "chunk_size", 200000), compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
 
         def consume(group):
             nonlocal total_fb_umis, multi_pi_fb_umis, dominant_multi_pi_fb_umis, retained_molecules
@@ -91,5 +93,4 @@ def filter_pi_seq_molecules(config, sample_name: str, source: Path):
         write_tsv(qc_path, list(row), [row])
         return row
     finally:
-        raw_path.unlink(missing_ok=True)
-        sorted_path.unlink(missing_ok=True)
+        shutil.rmtree(scratch)

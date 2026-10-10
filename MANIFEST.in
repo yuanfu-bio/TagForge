@@ -1,0 +1,21 @@
+include environment.yml
+include LICENSE
+include docs/*.md
+include docs/archive/CHANGELOG.md
+include docs/archive/TagForge_design.md
+include docs/archive/manifest.json
+recursive-include docs/archive/2.0.0 *.md
+recursive-include docs/archive/validation *.json
+include configs/config.example.yaml
+include tests/fixtures/small_fastq/generate_example_data.py
+recursive-include tests/fixtures/small_fastq/config *.txt *.tsv
+prune tests/fixtures/pi_seq_dev
+prune tests/validation/02_output
+prune docs/archive/testing
+prune 02_output
+prune 00_report
+global-exclude *.fq *.fastq *.fq.gz *.fastq.gz *.parquet *.xlsx
+global-exclude __pycache__ *.py[cod] .DS_Store
+include tests/fixtures/linker_truth/cases.json
+# Only the tiny public synthetic FASTQs are allowed in the source distribution.
+include tests/fixtures/small_fastq/raw/example/*.fq.gz

@@ -1,0 +1,77 @@
+[
+  {
+    "name": "unique_exact",
+    "sequence": "GGGACACTTT",
+    "length": 4,
+    "start": 3,
+    "max_mismatch": 0,
+    "expected_sequence": "ACAC",
+    "expected_success": true
+  },
+  {
+    "name": "short_decoy_before_true",
+    "sequence": "GGGTTTGGGACACTTT",
+    "length": 4,
+    "start": 9,
+    "max_mismatch": 0,
+    "expected_sequence": "ACAC",
+    "expected_success": true
+  },
+  {
+    "name": "position_disambiguates",
+    "sequence": "GGGACACTTTGGGCGCGTTT",
+    "length": 4,
+    "start": 13,
+    "max_mismatch": 0,
+    "expected_sequence": "CGCG",
+    "expected_success": true
+  },
+  {
+    "name": "no_position_different_tags",
+    "sequence": "GGGACACTTTGGGCGCGTTT",
+    "length": 4,
+    "start": null,
+    "max_mismatch": 0,
+    "expected_sequence": "",
+    "expected_success": false,
+    "expected_reason": "ambiguous_linker_pair"
+  },
+  {
+    "name": "repeated_identical_tag",
+    "sequence": "GGGACACTTTGGGACACTTT",
+    "length": 4,
+    "start": null,
+    "max_mismatch": 0,
+    "expected_sequence": "ACAC",
+    "expected_success": true
+  },
+  {
+    "name": "one_base_linker_error",
+    "sequence": "GGTACACTTT",
+    "length": 4,
+    "start": 3,
+    "max_mismatch": 1,
+    "expected_sequence": "ACAC",
+    "expected_success": true
+  },
+  {
+    "name": "no_right_linker",
+    "sequence": "GGGACACAAA",
+    "length": 4,
+    "start": 3,
+    "max_mismatch": 0,
+    "expected_sequence": "",
+    "expected_success": false,
+    "expected_reason": "right_linker_not_found"
+  },
+  {
+    "name": "wrong_length",
+    "sequence": "GGGACTTT",
+    "length": 4,
+    "start": 3,
+    "max_mismatch": 0,
+    "expected_sequence": "",
+    "expected_success": false,
+    "expected_reason": "unexpected_length"
+  }
+]

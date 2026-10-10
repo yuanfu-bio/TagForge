@@ -1,3 +1,12 @@
+# TagForge design notes
+
+These notes retain earlier design proposals and historical table/configuration
+sketches. The implemented 2.0 contracts are described in [README](../../README.md)
+and [MIGRATION](../MIGRATION.md); generate runnable configuration with
+`tagforge init-config`. Earlier TSV schemas and proposed fields such as
+`choose_optimal_by`, `max_memory_gb` and `keep_intermediate` are historical
+sketches and are rejected by the current configuration parser.
+
 ## 1. Project Goal
 
 **Project Name: TagForge**
@@ -418,6 +427,7 @@ umi_types
 umi_detected_once
 duplication_ratio
 sequencing_saturation
+non_singleton_molecule_fraction
 ```
 
 Definitions should be implemented and documented clearly.
@@ -427,23 +437,32 @@ Suggested definitions:
 ```
 UMI Types = number of unique corrected molecules detected
 UMI detected once = number of corrected molecules supported by exactly one read
-duplication_ratio = (dup) * 100 / (total)
-seq_saturation = (1 - (single / n_duplicate_set)) * 100
+duplication_ratio = (reads - molecules) / reads * 100
+sequencing_saturation = (reads - molecules) / reads * 100
+non_singleton_molecule_fraction = (1 - singletons / molecules) * 100
 ```
 
-If better definitions are used, document them clearly in README.
+`sequencing_saturation` is the read-level definition used by 10x and is
+numerically equal to `duplication_ratio` when both use the same reads and
+molecule groups. `non_singleton_molecule_fraction` names the former singleton-
+based TagForge metric.
 
-### 8.8 Optimal Saturation Matrix
+### 8.8 Selected Downsample Matrix
 
-When the library is over-sequenced, sequencing saturation may first increase and then decrease. The pipeline should identify the downsampling point where `Sequencing Saturation` is maximal.
+The selected ratio maximizes mean `non_singleton_molecule_fraction` across
+repeats; ties prefer the smaller ratio. The representative repeat is closest
+to that mean, then the lowest repeat index. Curves show mean/sample SD and all
+repeats are retained. Analytical expected counts are stored separately.
+This is a diagnostic of fixed full-depth corrected molecule groups and does
+not establish recommended sequencing depth.
 
 At that ratio, generate:
 
 ```
-matrix/{sample}.optimal_molecule_pairs.parquet
-matrix/{sample}.optimal_matrix_summary.json
+04_matrix/{sample}.optimal_molecule_pairs.parquet
+04_matrix/{sample}.optimal_matrix_summary.json
 
-These are produced only when the optimal ratio is below 1.0; at 1.0 the raw artifacts are reused.
+These legacy-named artifacts are produced only below ratio 1.0; at 1.0 the raw artifacts are referenced.
 ```
 
 The detail file should retain:
@@ -458,7 +477,9 @@ reads_count_at_optimal_downsample
 Also output:
 
 ```
-downsample/{sample}.optimal_saturation_point.tsv
+06_downsample/{sample}.selection_point.tsv
+06_downsample/{sample}.optimal_saturation_point.tsv  # compatibility alias
+06_downsample/{sample}.selection.json
 ```
 
 Required columns:
@@ -466,10 +487,11 @@ Required columns:
 ```
 sample
 optimal_downsample_ratio
-max_sequencing_saturation
+max_non_singleton_molecule_fraction
 reads_sampled
 umi_types
 umi_detected_once
+sequencing_saturation
 duplication_ratio
 ```
 
@@ -494,7 +516,7 @@ Suggested sheets:
 - `Correction Stats`
 - `UMI Stats`
 - `Downsample Metrics`
-- `Optimal Saturation`
+- `Optimal Downsample`
 - `Top Barcode1`
 - `Top Features`
 
@@ -625,7 +647,7 @@ enabled:true
 ratios:[0.05,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
 random_seed:12345
 repeats:1
-choose_optimal_by: max_sequencing_saturation
+choose_optimal_by: max_non_singleton_molecule_fraction
 
 performance:
 threads:8
@@ -825,9 +847,11 @@ tagforge/
 ├── configs/
 │   └── config.example.yaml
 ├── examples/
-│   ├── small_fastq/
-│   ├── FB_info.tsv
 │   └── tutorial.md
+├── tests/
+│   └── fixtures/
+│       ├── small_fastq/  # deterministic synthetic regression fixture
+│       └── pi_seq_dev/   # four paired PI-seq development samples
 ├── src/
 │   └── tagforge/
 │       ├── __init__.py

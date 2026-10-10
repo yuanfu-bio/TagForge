@@ -1,0 +1,227 @@
+{
+  "version": "2.0.0rc2",
+  "source_matches_wheel": true,
+  "license_in_both_artifacts": true,
+  "real_fastq_excluded": true,
+  "hashes": {
+    "tagforge-2.0.0rc2.tar.gz": "6a46a244b1bc2de088fcf35639d5e7e61be85b73382fcd965e3c318a3a8c061c",
+    "tagforge-2.0.0rc2-py3-none-any.whl": "71b2a4bd2ec6977579e10156f399a4e7f22ab5c23f5e0598683b0c70bdff33d6"
+  },
+  "status": "candidate_validation_passed_final_release_audit_pending",
+  "requires_python": ">=3.9",
+  "source_audit": "docs/archive/testing/m4-20261009/rc2-source-sha256.json",
+  "full_tests": {
+    "python311": {
+      "count": 85,
+      "elapsed_seconds": 18.871,
+      "result": "OK",
+      "source": "docs/archive/testing/m4-20261009/rc2-source",
+      "log": "docs/archive/testing/m4-20261009/tests-rc2-311.log"
+    },
+    "python39": {
+      "count": 85,
+      "elapsed_seconds": 18.268,
+      "result": "OK",
+      "source": "docs/archive/testing/m4-20261009/rc2-source39",
+      "log": "docs/archive/testing/m4-20261009/tests-rc2-39-r2.log"
+    }
+  },
+  "installed_checks": {
+    "python39": {
+      "python": "3.9.23 | packaged by conda-forge | (main, Jun  4 2025, 17:57:12) \n[GCC 13.3.0]",
+      "package_path": "/data/project/yanhuixu/yfu/TagForge/tests/validation/02_output/m4-20261009/env39/lib/python3.9/site-packages/tagforge/__init__.py",
+      "versions": {
+        "tagforge": "2.0.0rc2",
+        "cutadapt": "5.2",
+        "umi-tools": "1.1.6",
+        "duckdb": "1.4.5",
+        "pyarrow": "21.0.0",
+        "numpy": "2.0.2",
+        "pandas": "2.3.3",
+        "PyYAML": "6.0.3"
+      },
+      "cases": [
+        {
+          "case": "ordinary",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "pi",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "mapping",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "multi",
+          "samples": [
+            "demo-A",
+            "demo-B"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        }
+      ],
+      "commands": 31,
+      "result": "OK",
+      "scope": "Installed wheel CLI, all library types, multi-sample, flags, exports and Slurm syntax"
+    },
+    "python311": {
+      "python": "3.11.15 | packaged by conda-forge | (main, Jun 11 2026, 03:34:02) [GCC 14.3.0]",
+      "package_path": "/data/project/yanhuixu/yfu/TagForge/tests/validation/02_output/m4-20261009/env311/lib/python3.11/site-packages/tagforge/__init__.py",
+      "versions": {
+        "tagforge": "2.0.0rc2",
+        "cutadapt": "5.2",
+        "umi-tools": "1.1.6",
+        "duckdb": "1.5.6",
+        "pyarrow": "26.0.0",
+        "numpy": "2.4.6",
+        "pandas": "3.0.6",
+        "PyYAML": "6.0.3"
+      },
+      "cases": [
+        {
+          "case": "ordinary",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "pi",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "mapping",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "multi",
+          "samples": [
+            "demo-A",
+            "demo-B"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        }
+      ],
+      "commands": 31,
+      "result": "OK",
+      "scope": "Installed wheel CLI, all library types, multi-sample, flags, exports and Slurm syntax"
+    },
+    "python313": {
+      "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:13:31) [GCC 14.3.0]",
+      "package_path": "/data/project/yanhuixu/yfu/TagForge/tests/validation/02_output/m4-20261009/env313/lib/python3.13/site-packages/tagforge/__init__.py",
+      "versions": {
+        "tagforge": "2.0.0rc2",
+        "cutadapt": "5.2",
+        "umi-tools": "1.1.6",
+        "duckdb": "1.5.6",
+        "pyarrow": "26.0.0",
+        "numpy": "2.5.3",
+        "pandas": "3.0.6",
+        "PyYAML": "6.0.3"
+      },
+      "cases": [
+        {
+          "case": "ordinary",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "pi",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "mapping",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "multi",
+          "samples": [
+            "demo-A",
+            "demo-B"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        }
+      ],
+      "commands": 31,
+      "result": "OK",
+      "scope": "Installed wheel CLI, all library types, multi-sample, flags, exports and Slurm syntax"
+    }
+  },
+  "report_open": {
+    "html": 7,
+    "workbooks": 13,
+    "result": "OK",
+    "record": "docs/archive/testing/m4-20261009/report-open-rc2/summary.json"
+  },
+  "init_config": {
+    "version": "2.0.0rc2",
+    "result": "OK",
+    "installed_cli_template_matches_repository_example": true,
+    "existing_file_protected": true
+  },
+  "resolved": [
+    "Reject fractional/nonfinite/boolean integer inputs without silent truncation",
+    "Restore misplaced test assertion",
+    "Ignore local real FASTQs",
+    "Include complete existing MIT LICENSE in wheel and sdist"
+  ],
+  "preserved_failure_evidence": {
+    "workflow": "docs/archive/testing/m4-20261009/workflow-rc2.log",
+    "parallel_test_output_collision": "docs/archive/testing/m4-20261009/tests-rc2-39.log",
+    "explanation": "Two Python regression runs initially used the same test output directory; sample locking rejected the second run. The isolated Python 3.9 source copy matches all 65 original snapshot file digests and passes."
+  },
+  "remaining": [
+    "Final M0-M4 requirement/evidence audit including pre-existing dirty baseline changes",
+    "Consolidate final CHANGELOG, migration and release notes",
+    "Prepare local 2.0.0 source/artifacts/checksums after final audit; remote publication is not authorized"
+  ]
+}

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import gzip
+import json
+from datetime import datetime, timezone
 import os
 from contextlib import contextmanager
 from pathlib import Path
@@ -9,15 +11,24 @@ from typing import Iterable, Iterator, Mapping
 
 
 SUBDIRS = {
-    "logs": "00_logs", "checkpoint": "01_checkpoint", "extracted": "02_extracted",
-    "corrected": "03_corrected", "matrix": "04_matrix", "detail": "05_detail",
-    "downsample": "06_downsample", "report": "07_report", "tmp": "08_tmp",
+    "logs": "00_logs", "checkpoint": "00_logs/checkpoints", "extracted": "01_extracted",
+    "corrected": "02_corrected", "matrix": "04_matrix", "detail": "03_molecules",
+    "downsample": "05_downsample", "report": "06_report",
 }
 
 
-def sample_dirs(output_dir: Path, sample: str):
+def batch_report_dir(output_dir: Path) -> Path:
+    """Keep all batch reports within the configured output root."""
+    return output_dir / "00_report"
+
+
+def sample_paths(output_dir: Path, sample: str):
     root = output_dir / sample
-    paths = {key: root / value for key, value in SUBDIRS.items()}
+    return {key: root / value for key, value in SUBDIRS.items()}
+
+
+def sample_dirs(output_dir: Path, sample: str):
+    paths = sample_paths(output_dir, sample)
     for path in paths.values():
         path.mkdir(parents=True, exist_ok=True)
     return paths
@@ -96,6 +107,15 @@ def touch_checkpoint(path: Path, version: str):
         handle.write(f"tagforge_version={version}\n")
 
 
+def checkpoint_version(version: str, step: str) -> str:
+    """Version output schemas independently so metric changes rerun only affected stages."""
+    schema = {
+        "downsample": "downsample-schema-2",
+        "report": "report-schema-2",
+    }.get(step)
+    return f"{version}:{schema}" if schema else version
+
+
 def output_ready(path: Path) -> bool:
     """Accept normal files and nonempty Parquet dataset directories."""
     return (path.is_file() and path.stat().st_size > 0) or (
@@ -110,3 +130,17 @@ def step_complete(checkpoint: Path, outputs: list[Path], overwrite: bool, versio
         and checkpoint.read_text(encoding="utf-8").strip() == f"tagforge_version={version}"
         and all(output_ready(path) for path in outputs)
     )
+
+
+def write_json(path: Path, value):
+    with atomic_text(path) as handle:
+        json.dump(value, handle, ensure_ascii=False)
+        handle.write("\n")
+
+
+def write_progress(path: Path, sample: str, stage: str, values):
+    """Publish the latest stage snapshot; pipeline.log retains the history."""
+    write_json(path, {"schema": 1, "sample": sample, "stage": stage,
+                      "updated_at": datetime.now(timezone.utc).isoformat(), **values})
+    for name in ("extraction", "correction", "dedup", "downsample"):
+        (path.parent / f"{sample}.{name}_progress.tsv").unlink(missing_ok=True)

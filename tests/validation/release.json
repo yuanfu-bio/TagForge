@@ -1,0 +1,1128 @@
+{
+  "status": "local_runtime_validated_package_rebuild_pending",
+  "version": "2.0.0",
+  "date": "2026-10-09",
+  "original_plan": "docs/archive/2.0.0/TagForge_2.0.0_plan.md",
+  "requirement_audit": "docs/RELEASE_READINESS.md",
+  "source_review": "tests/validation/source-review.json",
+  "source_snapshot": "docs/archive/testing/m4-20261009/release-source-r3",
+  "source_audit": "docs/archive/testing/m4-20261009/release-source-r3-sha256.json",
+  "worktree_matches_frozen_source": false,
+  "frozen_inputs_unchanged_after_regression": true,
+  "full_tests": {
+    "python39": {
+      "count": 91,
+      "result": "OK",
+      "elapsed_seconds": 19.534,
+      "scope": "frozen source",
+      "log": "docs/archive/testing/m4-20261009/tests-release-39-r3.log"
+    },
+    "python311": {
+      "count": 91,
+      "result": "OK",
+      "elapsed_seconds": 18.302,
+      "scope": "frozen source",
+      "log": "docs/archive/testing/m4-20261009/tests-release-311-r3.log"
+    },
+    "python313": {
+      "count": 91,
+      "result": "OK",
+      "elapsed_seconds": 21.008,
+      "scope": "installed wheel",
+      "log": "docs/archive/testing/m4-20261009/tests-release-installed-313-r3.log"
+    }
+  },
+  "installed_checks": {
+    "python39": {
+      "python": "3.9.23 | packaged by conda-forge | (main, Jun  4 2025, 17:57:12) \n[GCC 13.3.0]",
+      "package_path": "/data/project/yanhuixu/yfu/TagForge/tests/validation/02_output/m4-20261009/env39/lib/python3.9/site-packages/tagforge/__init__.py",
+      "versions": {
+        "tagforge": "2.0.0",
+        "cutadapt": "5.2",
+        "umi-tools": "1.1.6",
+        "duckdb": "1.4.5",
+        "pyarrow": "21.0.0",
+        "numpy": "2.0.2",
+        "pandas": "2.3.3",
+        "PyYAML": "6.0.3"
+      },
+      "cases": [
+        {
+          "case": "ordinary",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "pi",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "mapping",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "multi",
+          "samples": [
+            "demo-A",
+            "demo-B"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        }
+      ],
+      "commands": 31,
+      "result": "OK",
+      "scope": "Installed wheel CLI, all library types, multi-sample, flags, exports and Slurm syntax",
+      "record": "docs/archive/testing/m4-20261009/smoke39-release-r3/summary.json"
+    },
+    "python311": {
+      "python": "3.11.15 | packaged by conda-forge | (main, Jun 11 2026, 03:34:02) [GCC 14.3.0]",
+      "package_path": "/data/project/yanhuixu/yfu/TagForge/tests/validation/02_output/m4-20261009/env311/lib/python3.11/site-packages/tagforge/__init__.py",
+      "versions": {
+        "tagforge": "2.0.0",
+        "cutadapt": "5.2",
+        "umi-tools": "1.1.6",
+        "duckdb": "1.5.6",
+        "pyarrow": "26.0.0",
+        "numpy": "2.4.6",
+        "pandas": "3.0.6",
+        "PyYAML": "6.0.3"
+      },
+      "cases": [
+        {
+          "case": "ordinary",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "pi",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "mapping",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "multi",
+          "samples": [
+            "demo-A",
+            "demo-B"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        }
+      ],
+      "commands": 31,
+      "result": "OK",
+      "scope": "Installed wheel CLI, all library types, multi-sample, flags, exports and Slurm syntax",
+      "record": "docs/archive/testing/m4-20261009/smoke311-release-r3/summary.json"
+    },
+    "python313": {
+      "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:13:31) [GCC 14.3.0]",
+      "package_path": "/data/project/yanhuixu/yfu/TagForge/tests/validation/02_output/m4-20261009/env313/lib/python3.13/site-packages/tagforge/__init__.py",
+      "versions": {
+        "tagforge": "2.0.0",
+        "cutadapt": "5.2",
+        "umi-tools": "1.1.6",
+        "duckdb": "1.5.6",
+        "pyarrow": "26.0.0",
+        "numpy": "2.5.3",
+        "pandas": "3.0.6",
+        "PyYAML": "6.0.3"
+      },
+      "cases": [
+        {
+          "case": "ordinary",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "pi",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "mapping",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "multi",
+          "samples": [
+            "demo-A",
+            "demo-B"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        }
+      ],
+      "commands": 31,
+      "result": "OK",
+      "scope": "Installed wheel CLI, all library types, multi-sample, flags, exports and Slurm syntax",
+      "record": "docs/archive/testing/m4-20261009/smoke313-release-r3/summary.json"
+    }
+  },
+  "additional_installed_cli_checks": {
+    "record": "docs/archive/testing/m4-20261009/release-audit-final-r3/summary.json",
+    "commands": 60,
+    "checks": [
+      {
+        "gate": "independent_stages_and_repeat",
+        "library": "ordinary",
+        "stages": [
+          "extract",
+          "correct",
+          "dedup",
+          "matrix",
+          "downsample",
+          "report"
+        ],
+        "molecules": 6,
+        "reads": 9,
+        "result": "OK"
+      },
+      {
+        "gate": "independent_stages_and_repeat",
+        "library": "pi",
+        "stages": [
+          "extract",
+          "correct",
+          "dedup",
+          "matrix",
+          "downsample",
+          "report"
+        ],
+        "molecules": 6,
+        "reads": 9,
+        "result": "OK"
+      },
+      {
+        "gate": "independent_stages_and_repeat",
+        "library": "mapping",
+        "stages": [
+          "extract",
+          "correct",
+          "dedup",
+          "downsample",
+          "pair-map",
+          "report"
+        ],
+        "molecules": 6,
+        "reads": 9,
+        "result": "OK"
+      },
+      {
+        "gate": "metric_units_and_artifact_values",
+        "result": "OK"
+      },
+      {
+        "gate": "old_completion_rejected_and_rebuilt",
+        "result": "OK"
+      },
+      {
+        "gate": "stale_export_rejected_then_recomputed_counts_exported",
+        "result": "OK"
+      },
+      {
+        "gate": "legacy_flat_configuration",
+        "result": "OK"
+      },
+      {
+        "gate": "configured_threshold_stops_cli_pipeline",
+        "result": "OK"
+      },
+      {
+        "gate": "zero_valid_prefix_remains_diagnostic_without_threshold",
+        "result": "OK"
+      },
+      {
+        "gate": "different_samples_run_concurrently_without_losing_summary_rows",
+        "result": "OK"
+      }
+    ]
+  },
+  "reports": {
+    "result": "OK",
+    "workbooks": 13,
+    "html": 13,
+    "pdf": 13,
+    "record": "docs/archive/testing/m4-20261009/report-open-release-r3/summary.json",
+    "fonts": "docs/archive/testing/m4-20261009/report-open-release-r3/fonts-verification.json"
+  },
+  "init_config": {
+    "version": "2.0.0",
+    "result": "OK",
+    "installed_cli_template_matches_repository_example": true,
+    "existing_file_protected": true
+  },
+  "development_environment": {
+    "python": "3.11.15 | packaged by conda-forge | (main, Jun 11 2026, 03:34:02) [GCC 14.3.0]",
+    "version": "2.0.0",
+    "package_path": "/data/project/yanhuixu/yfu/TagForge/src/tagforge/__init__.py",
+    "metadata_version": "2.0.0",
+    "cli": "TagForge 2.0.0",
+    "result": "OK"
+  },
+  "package": {
+    "version": "2.0.0",
+    "source_matches_wheel": true,
+    "license_in_both_artifacts": true,
+    "real_fastq_excluded": true,
+    "synthetic_fastq_files_in_sdist": 2,
+    "release_docs_in_sdist": true,
+    "hashes": {
+      "tagforge-2.0.0.tar.gz": "7f4f0b0a3d0200f39cbcdecf106a9b6260dd97292f2f8dc6bd7af805c5e21cdc",
+      "tagforge-2.0.0-py3-none-any.whl": "082403e27d42c43a5c2fc6d0975d853e268e5a47f6e6778490b7f78497cc54ed"
+    },
+    "directory": "docs/archive/testing/m4-20261009/dist-release-r3",
+    "checksums": "docs/archive/testing/m4-20261009/dist-release-r3/SHA256SUMS",
+    "includes_snappy_default": false,
+    "includes_consolidated_batch_reports": false,
+    "includes_unified_batch_workbook": false,
+    "includes_compact_output_contract": false,
+    "includes_checkpoint_work_layout": false,
+    "includes_manifest_json_filenames": false
+  },
+  "gnu_sort": "sort (GNU coreutils) 9.4",
+  "historical_archive": {
+    "result": "OK",
+    "files": 552,
+    "bytes": 125166143,
+    "manifest": "docs/archive/testing/m1-20261009/archive-manifest.json",
+    "scope": "Original complete baseline and M1 validation archive remains byte-identical"
+  },
+  "count_comparisons": {
+    "synthetic": {
+      "record": "docs/archive/testing/m3-20261009/performance/synthetic/count-comparison.json",
+      "result": "OK",
+      "samples": [
+        {
+          "sample": "example",
+          "tables": {
+            "valid_reads": {
+              "rows": 9,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail": {
+              "rows": 6,
+              "symmetric_difference_rows": 0
+            },
+            "raw_molecule_pairs": {
+              "rows": 2,
+              "symmetric_difference_rows": 0
+            }
+          },
+          "raw_matrix_summary_equal": true,
+          "downsample_metrics.tsv_equal": true
+        }
+      ]
+    },
+    "pi4": {
+      "record": "docs/archive/testing/m3-20261009/performance/pi4/count-comparison.json",
+      "result": "OK",
+      "samples": [
+        {
+          "sample": "100-1-N1",
+          "tables": {
+            "valid_reads": {
+              "rows": 47281,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail": {
+              "rows": 46423,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail.rmMP": {
+              "rows": 46413,
+              "symmetric_difference_rows": 0
+            },
+            "raw_molecule_pairs": {
+              "rows": 46301,
+              "symmetric_difference_rows": 0
+            }
+          },
+          "raw_matrix_summary_equal": true,
+          "pi_seq_qc.tsv_equal": true,
+          "downsample_metrics.tsv_equal": true
+        },
+        {
+          "sample": "100-2-SLE1",
+          "tables": {
+            "valid_reads": {
+              "rows": 47231,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail": {
+              "rows": 46198,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail.rmMP": {
+              "rows": 46184,
+              "symmetric_difference_rows": 0
+            },
+            "raw_molecule_pairs": {
+              "rows": 46030,
+              "symmetric_difference_rows": 0
+            }
+          },
+          "raw_matrix_summary_equal": true,
+          "pi_seq_qc.tsv_equal": true,
+          "downsample_metrics.tsv_equal": true
+        },
+        {
+          "sample": "100-3-SLE2",
+          "tables": {
+            "valid_reads": {
+              "rows": 47604,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail": {
+              "rows": 46430,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail.rmMP": {
+              "rows": 46422,
+              "symmetric_difference_rows": 0
+            },
+            "raw_molecule_pairs": {
+              "rows": 46251,
+              "symmetric_difference_rows": 0
+            }
+          },
+          "raw_matrix_summary_equal": true,
+          "pi_seq_qc.tsv_equal": true,
+          "downsample_metrics.tsv_equal": true
+        },
+        {
+          "sample": "100-5-N2",
+          "tables": {
+            "valid_reads": {
+              "rows": 47425,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail": {
+              "rows": 46454,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail.rmMP": {
+              "rows": 46450,
+              "symmetric_difference_rows": 0
+            },
+            "raw_molecule_pairs": {
+              "rows": 46304,
+              "symmetric_difference_rows": 0
+            }
+          },
+          "raw_matrix_summary_equal": true,
+          "pi_seq_qc.tsv_equal": true,
+          "downsample_metrics.tsv_equal": true
+        }
+      ]
+    },
+    "million": {
+      "record": "docs/archive/testing/m3-20261009/performance/million/count-comparison.json",
+      "result": "OK",
+      "samples": [
+        {
+          "sample": "100-1-N1",
+          "tables": {
+            "valid_reads": {
+              "rows": 947722,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail": {
+              "rows": 705912,
+              "symmetric_difference_rows": 0
+            },
+            "molecule_detail.rmMP": {
+              "rows": 704259,
+              "symmetric_difference_rows": 0
+            },
+            "raw_molecule_pairs": {
+              "rows": 686585,
+              "symmetric_difference_rows": 0
+            }
+          },
+          "raw_matrix_summary_equal": true,
+          "pi_seq_qc.tsv_equal": true,
+          "downsample_metrics.tsv_equal": true
+        }
+      ]
+    }
+  },
+  "performance": "docs/archive/testing/m3-20261009/performance/summary.json",
+  "strategy_decision": "docs/archive/testing/m3-20261009/strategy/decision.json",
+  "gates": {
+    "F01": {
+      "status": "passed",
+      "tests": [
+        "test_whitelist_change_invalidates_only_affected_stages",
+        "test_content_checksum_detects_annotation_change_with_same_metadata",
+        "test_coordinate_change_invalidates_extraction_and_downstream",
+        "test_umi_settings_change_does_not_repeat_correction",
+        "test_strong_fastq_checksum_detects_same_metadata_change",
+        "test_report_version_change_reuses_upstream_counts",
+        "test_matrix_export_rejects_stale_config_and_preserves_existing_output"
+      ],
+      "full_test_records": [
+        "python39",
+        "python311",
+        "python313"
+      ],
+      "additional_evidence": "docs/RELEASE_READINESS.md"
+    },
+    "F02": {
+      "status": "passed",
+      "tests": [
+        "test_final_extraction_stats_failure_can_resume",
+        "test_final_correction_stats_failure_can_resume",
+        "test_uncommitted_fragment_and_preview_tail_are_discarded",
+        "test_interrupted_publication_recovers_without_recomputing",
+        "test_missing_or_corrupt_fragment_invalidates_downstream",
+        "test_same_sample_lock_rejects_second_writer"
+      ],
+      "full_test_records": [
+        "python39",
+        "python311",
+        "python313"
+      ],
+      "additional_evidence": "docs/RELEASE_READINESS.md"
+    },
+    "F03": {
+      "status": "passed",
+      "tests": [
+        "test_full_depth_selection_replaces_old_optimal_reference",
+        "test_selected_fragment_loss_requires_regeneration",
+        "test_zero_selection_is_a_valid_empty_dataset",
+        "test_full_depth_then_subset_and_new_seed_have_consistent_counts",
+        "test_matrix_publication_removes_legacy_table_that_can_shadow_counts"
+      ],
+      "full_test_records": [
+        "python39",
+        "python311",
+        "python313"
+      ],
+      "additional_evidence": "docs/RELEASE_READINESS.md"
+    },
+    "F04": {
+      "status": "passed",
+      "tests": [
+        "test_partial_segments_and_invalid_umi_agree_per_read",
+        "test_annotation_missing_and_barcode_ambiguity_are_distinct",
+        "test_zero_valid_is_diagnostic_unless_threshold_configured",
+        "test_n_base_threshold_is_explicit",
+        "test_duplication_uses_the_same_percent_unit_as_downsample"
+      ],
+      "full_test_records": [
+        "python39",
+        "python311",
+        "python313"
+      ],
+      "additional_evidence": "docs/archive/testing/m4-20261009/release-audit-final-r3/summary.json"
+    },
+    "F05": {
+      "status": "passed",
+      "tests": [
+        "test_file_fragments_and_empty_table_have_same_typed_schema",
+        "test_legacy_migration_keeps_numeric_counts_and_empty_header",
+        "test_incomplete_current_table_does_not_fall_back_to_legacy",
+        "test_schema_mismatch_is_rejected_on_read_and_resume",
+        "test_annotation_counts_full_feature_with_and_without_trace",
+        "test_legacy_directory_trace_recovers_multisegment_annotation_counts"
+      ],
+      "full_test_records": [
+        "python39",
+        "python311",
+        "python313"
+      ],
+      "additional_evidence": "docs/RELEASE_READINESS.md"
+    },
+    "F06": {
+      "status": "passed",
+      "tests": [
+        "test_disabled_downsample_uses_full_counts_without_selection",
+        "test_resume_disabled_recomputes_every_planned_stage",
+        "test_pb_cb_pipeline_reports_without_matrix",
+        "test_aliases_merge_shared_umi_and_preserve_reads",
+        "test_equal_support_cbs_cannot_alias_each_other_at_ratio_one",
+        "test_inapplicable_umi_settings_and_conflicting_segment_roles_are_rejected",
+        "test_matrix_migration_applies_and_validates_cli_thread_override"
+      ],
+      "full_test_records": [
+        "python39",
+        "python311",
+        "python313"
+      ],
+      "additional_evidence": "docs/archive/testing/m4-20261009/release-audit-final-r3/summary.json"
+    },
+    "F07": {
+      "status": "passed",
+      "tests": [
+        "test_original_exact_hit_skips_distance_search",
+        "test_aggregation_and_all_export_formats_preserve_counts",
+        "test_components_match_full_scope_for_supported_methods",
+        "test_group_budget_stops_loading_before_unbounded_growth",
+        "test_component_budget_rejects_connected_chain",
+        "test_both_backends_preserve_counts_and_report_scope_peaks"
+      ],
+      "full_test_records": [
+        "python39",
+        "python311",
+        "python313"
+      ],
+      "additional_evidence": "docs/RELEASE_READINESS.md"
+    },
+    "A01": {
+      "status": "passed",
+      "tests": [
+        "test_length_position_against_independent_tag_truth",
+        "test_legacy_shortest_reproduces_short_decoy_failure",
+        "test_ambiguous_linker_keeps_explicit_fixed_fallback"
+      ],
+      "full_test_records": [
+        "python39",
+        "python311",
+        "python313"
+      ],
+      "additional_evidence": "docs/RELEASE_READINESS.md"
+    },
+    "A02": {
+      "status": "passed",
+      "tests": [
+        "test_ratio_selected_by_repeat_mean_not_largest_random_repeat",
+        "test_curve_keeps_one_mean_and_sd_per_ratio",
+        "test_count_expectations_match_exhaustive_read_subsets",
+        "test_endpoints_and_large_support_remain_finite",
+        "test_report_embeds_repeat_means_and_actual_standard_deviations"
+      ],
+      "full_test_records": [
+        "python39",
+        "python311",
+        "python313"
+      ],
+      "additional_evidence": "docs/RELEASE_READINESS.md"
+    },
+    "M0.1": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "M0.2": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "M0.3": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "M0.4": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "M0.5": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "M4.1": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "M4.2": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "M4.3": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "M4.4": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "M4.5": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C01": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C02": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C03": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C04": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C05": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C06": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C07": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C08": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C09": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C10": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    },
+    "C11": {
+      "status": "passed",
+      "requirement_and_evidence_mapping": "docs/RELEASE_READINESS.md",
+      "evidence_index": "tests/validation/release.json"
+    }
+  },
+  "remaining_required_work": [
+    "Rebuild and validate release distributions from the current source with Snappy, unified workbooks and compact outputs; prior packages remain historical."
+  ],
+  "deferred_as_originally_scoped": [
+    "Linker default change until biological/reference accuracy evidence supports it",
+    "Full per-depth UMI reclustering/library filtering and depth recommendation research",
+    "Large-whitelist/quality-aware correction, complete huge-UMI solutions and dominance policy research"
+  ],
+  "publication_state": "Prepared locally; no push, tag, PR, release upload or PyPI publication performed",
+  "validation_limits": "See docs/MIGRATION.md, docs/RELEASE_NOTES.md and original benchmark summaries",
+  "source_files_verified": 62,
+  "installed_cli_commands": 153,
+  "baseline_normalized_config": "docs/archive/testing/m4-20261009/baseline-normalized-config.json",
+  "superseded_final_builds": [
+    "docs/archive/testing/m4-20261009/dist-release",
+    "docs/archive/testing/m4-20261009/dist-release-r2"
+  ],
+  "evidence_sha256": {
+    "docs/archive/testing/m4-20261009/tests-release-39-r3.log": "301b2c564567d4d0c036a16d3ae7352a1508c47b34f0e5a6db432177cbe9f342",
+    "docs/archive/testing/m4-20261009/tests-release-311-r3.log": "9ab84b5f861e27a0b55ed5e3147d7dd37d2828197442353f9a3feb0e8e7fbeb5",
+    "docs/archive/testing/m4-20261009/tests-release-installed-313-r3.log": "4ff0b612572d2c7e2efc8591165b4b955d4c14e611da8bd22e2e61b7de5b92d9",
+    "docs/archive/testing/m4-20261009/smoke39-release-r3/summary.json": "022babc544d7c86468dbcfa61625759c253fc094a72e106d2430e887a4ba0f50",
+    "docs/archive/testing/m4-20261009/smoke311-release-r3/summary.json": "3475b1f5918b97594db65cd1ac8d39596824a1e8091d3028448a5d9e7afd264b",
+    "docs/archive/testing/m4-20261009/smoke313-release-r3/summary.json": "ed663ec872e38f03a0927cff68c9ff0f3b3579e6b969df7c68e27f150dd03855",
+    "docs/archive/testing/m4-20261009/release-audit-final-r3/summary.json": "79e511bad6fde37ed397a6674a9e0d7bcfd6b66f36943cb5c1c754fa6e43b580",
+    "docs/archive/testing/m4-20261009/report-open-release-r3/summary.json": "4f153dbcc4276d4aa64588c6730a3206d98f5440e1af8cc9e9a80fb1faaca8a5"
+  },
+  "source_snapshot_policy": "Mutable validation JSON/Markdown ledgers are excluded; runtime modules, tests, validation scripts, packaged docs/config and synthetic fixture are frozen.",
+  "latest_fix": {
+    "issue": "Export could read stale matrix counts after a config change",
+    "reproduction": "docs/archive/testing/m4-20261009/stale-export-repro/summary.json",
+    "old_export_molecules": 6,
+    "recomputed_molecules": 7,
+    "regression": "test_matrix_export_rejects_stale_config_and_preserves_existing_output",
+    "installed_cli_gate": "stale_export_rejected_then_recomputed_counts_exported",
+    "result": "resolved"
+  },
+  "runtime_matches_verified_source": false,
+  "documentation_archive": {
+    "date": "2026-10-09",
+    "index": "docs/README.md",
+    "manifest": "docs/archive/manifest.json",
+    "runtime_changed": false,
+    "frozen_experiments_preserved": true,
+    "worktree_documentation_changes": [
+      {
+        "path": ".gitignore",
+        "current_path": ".gitignore",
+        "frozen_sha256": "ad756ea39d3ebf76f3c0d371444454d6d1d95b7ce30ba50f5117974434ed5380",
+        "current_sha256": "0113c5efea65dfdce0d93b82e210b5efb77e87fe79ad79feeca4679474f16afb"
+      },
+      {
+        "path": "CHANGELOG.md",
+        "current_path": "docs/CHANGELOG.md",
+        "frozen_sha256": "5d6a9c25d676ab0fcd0db31eecdfbb013f5501042f85927472e92236e59b5a9a",
+        "current_sha256": "bfd9a891eb7f581d9fda667c2b04e2e8a1d659760a1a135ec9a4ef0ef5ceb18e"
+      },
+      {
+        "path": "MANIFEST.in",
+        "current_path": "MANIFEST.in",
+        "frozen_sha256": "9dd9dcf1f29fdb2105fa31e99a23ee82be7013f7e9313811af9474258755025f",
+        "current_sha256": "7a69473a590525f2ff8604db867efff0b74c01eb4417c0a36368f6db89933f78"
+      },
+      {
+        "path": "MIGRATION.md",
+        "current_path": "docs/MIGRATION.md",
+        "frozen_sha256": "570c4165b1010e7875f02870c2e8d97d23f38a6d70c9b164a7f5c4c6550d3968",
+        "current_sha256": "570c4165b1010e7875f02870c2e8d97d23f38a6d70c9b164a7f5c4c6550d3968"
+      },
+      {
+        "path": "README.md",
+        "current_path": "README.md",
+        "frozen_sha256": "70fe299ae67850e11933e9997f1e5c3fac3bb6336f90cf555402eaee3631bc58",
+        "current_sha256": "66fb7c383d0ffe1a8cf511c060942e8b6aa5ddfb66684bdbfe9dfe74fabd7252"
+      },
+      {
+        "path": "RELEASE_NOTES.md",
+        "current_path": "docs/RELEASE_NOTES.md",
+        "frozen_sha256": "2f15d5295cc6e23824458bf876653a7f2dd460aaeff3ef82b770f30e2d374183",
+        "current_sha256": "2f15d5295cc6e23824458bf876653a7f2dd460aaeff3ef82b770f30e2d374183"
+      },
+      {
+        "path": "RELEASE_READINESS.md",
+        "current_path": "docs/RELEASE_READINESS.md",
+        "frozen_sha256": "89cf7dbc8f951cadebd5ffba378cd5daa404f644cd953e37a23bf24d3f41c939",
+        "current_sha256": "c06c75456721053d7638fb40772368541514a3ae056499db159a4ca2a6afcede"
+      },
+      {
+        "path": "examples/tutorial.md",
+        "current_path": "docs/tutorial.md",
+        "frozen_sha256": "5447743148a988ca5bb2b113b50d9675aa0641b3bccd5ca65b6fb8e7a283efd1",
+        "current_sha256": "9425ae94e29dc6d15d4600e86f90cb4a52cb2b704e55e0f0615be83715c50ca9"
+      }
+    ],
+    "note": "The recorded tests and built packages refer to their frozen original source. Documentation paths in the current worktree have since been archived; runtime, test and fixture content is unchanged.",
+    "current_changelog_in_source_distribution": true,
+    "current_layout": "Root README only; all maintained Markdown under docs; frozen experimental snapshots retain their original layout.",
+    "previous_packaging_check": "docs/archive/testing/documentation-archive-20261009/summary.json",
+    "layout_consolidation": {
+      "records": [
+        {
+          "original_path": "CHANGELOG.md",
+          "current_path": "docs/CHANGELOG.md",
+          "original_sha256": "d275f82a7ced3d4f3c128a0a98c765ab4706eb8f80276fe32d2905516267d066"
+        },
+        {
+          "original_path": "MIGRATION.md",
+          "current_path": "docs/MIGRATION.md",
+          "original_sha256": "570c4165b1010e7875f02870c2e8d97d23f38a6d70c9b164a7f5c4c6550d3968"
+        },
+        {
+          "original_path": "RELEASE_NOTES.md",
+          "current_path": "docs/RELEASE_NOTES.md",
+          "original_sha256": "2f15d5295cc6e23824458bf876653a7f2dd460aaeff3ef82b770f30e2d374183"
+        },
+        {
+          "original_path": "RELEASE_READINESS.md",
+          "current_path": "docs/RELEASE_READINESS.md",
+          "original_sha256": "93285acd0f8d19fc594c3bef076423187316db62f027eccf07661966922b77c7"
+        },
+        {
+          "original_path": "examples/tutorial.md",
+          "current_path": "docs/tutorial.md",
+          "original_sha256": "5447743148a988ca5bb2b113b50d9675aa0641b3bccd5ca65b6fb8e7a283efd1"
+        },
+        {
+          "original_path": "tests/validation/README.md",
+          "current_path": "docs/validation.md",
+          "original_sha256": "8acf2a452b6dfc2012b30f0e38789979e03805efe4d133410f45cbee1ae5655e"
+        },
+        {
+          "original_path": "tests/fixtures/pi_seq_dev/README.md",
+          "current_path": "docs/pi_seq_dev.md",
+          "original_sha256": "24f6aae5c64115ad8a565ea4597acd53956494fb5df190d1416ee34eb481352e"
+        }
+      ],
+      "runtime_before_sha256": {
+        "src/tagforge/xlsx.py": "cbafa942fb2df7f9db15e9707af30a53e76801744629492395ad4fe6933f9a6b",
+        "src/tagforge/external_tools.py": "fe40ffd5c2f190b36399288ac015facf490f30f412f6d71456cae706b8de95fc",
+        "src/tagforge/pipeline.py": "2d2d59ee83dd7133d4bfd0a427b223be033d817eace92eb4d235ada98d18eaa9",
+        "src/tagforge/selected.py": "d95813453ee35e88e89fb5267f67ab0e48f70a5c4cc999b6d19063498628596f",
+        "src/tagforge/cli.py": "e055c04bc3488fc9bb4e965662514347db52e256c3839b4c9bb9211cbefdc8d4",
+        "src/tagforge/downsample.py": "0585a22ff8bc05b275dadb7d60847b61f6a3cefba63a841ebbac67b9e18e4e7f",
+        "src/tagforge/fastq.py": "f9e1b01ed806b9b25430c97316125c2e85af689cd337abb7a19dda3b3882771b",
+        "src/tagforge/columnar.py": "66f15ed4e6ff889b3918e5d2d34beaedded9b6ad376b825c286757ffbfa7b52a",
+        "src/tagforge/umi_correct.py": "4916ffa0732531558517fde917ed6d2df32a5ebc566718bce4c9099ee35555a3",
+        "src/tagforge/barcode_correct.py": "79d1ae3475aa58b36b93374649d87f666ecb27c6e5e9b500565546970616ce17",
+        "src/tagforge/matrix.py": "dd1fa6041e5ca408744b58fd57110c60cd4f82c16ca099a86bd0cd71c9fc4916",
+        "src/tagforge/__init__.py": "052ef09db75f95efba44298249d8330e5b8f99aa67b16f2e3f445f087cd1b89f",
+        "src/tagforge/checkpoint.py": "f369c60c1b6f172453dd939231c60a3e88aacd8b5b44c77da82d89572f246f64",
+        "src/tagforge/pi_seq.py": "b3fe4db24b5385bd1f33c87cb9427950a63acfc4f0d6aecddd09ce080530e7d1",
+        "src/tagforge/quick_test.py": "165af52580305770f102fb2561d13c1a7c71d9408bf8aba6db636ba3f28be0bc",
+        "src/tagforge/extract.py": "14128f837cd0d51d39059f3a653192040320d91c2517f6a08d43592ec1ee65df",
+        "src/tagforge/reports.py": "829afbc0c580e724bb628878065b4964e1f2ee6addcb95d209f6ac15d04b64e6",
+        "src/tagforge/logging_utils.py": "0dfb1118a80ef39ac46e2df1ba4441207b358db1585a4975aeb2146250ebb8c4",
+        "src/tagforge/__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+        "src/tagforge/example_data.py": "35afb7f5452ef4b19e8d292d2ff2219b1b151860087cb4f094442baac797b47c",
+        "src/tagforge/config.py": "c33e10dedf1ff79796c136ad7f87a37e26fb9362ee2af4ed361318b0838ca849",
+        "src/tagforge/slurm.py": "c7603f59578f3f26609ff807777d7b9214b912327e49f277479bf811ff497401",
+        "src/tagforge/io_utils.py": "cc6a80a91b4c88978966a63769fcf2873a59bf0eba504e5e672f581b8c0020ab",
+        "src/tagforge/simple_yaml.py": "c171b1b85971c8d08851d5565447dca26a78a537e9b34bc477c4b6674d528c34",
+        "src/tagforge/sparse_matrix.py": "326e6cf70ded68307392421d820fed182e1c5725cfd6804512db746f1abad975",
+        "tests/test_columnar.py": "405c5c8b87b9586bfaa6913731e945f71308110a871be48f61144fd2edbc2ae2",
+        "tests/test_sparse_matrix.py": "a6ec06ea4e859e04ee442837d3184ec09e1d89813acbf7c20945c855bac46b01",
+        "tests/test_integration.py": "bbbf4e3dd8a222ce57105f86876d49db967405f2c1c75ae82f24e76388c841b6",
+        "tests/test_downsample_selection.py": "632ea8534870f897c1ed64dd8f64dad612fa3fa8bb38097db005ae3b8dcf1549",
+        "tests/test_core.py": "e04705c0fa242413948f6a23dfbea2003d5b4a697868b73c41d7d4f8bfe80d7e",
+        "tests/test_umi_budget.py": "d3b3bac3784d9c3d918156f8c7b98d5401f714f820869633431cc99d54f53c2a",
+        "tests/test_checkpoint.py": "93fa718c5d6654483abbfb11c4eb330a1f8c363231c8d69ba3948ecbc30deedf",
+        "tests/test_linker_strategy.py": "1cdb23ce1f435aec271b704589b251b44a69c6c67f8586ac45c6804a72788610",
+        "tests/test_workflow.py": "2c9bcd928488eaddb96efe732cfd6e6bf9d403bed53674be400a67340376512c",
+        "tests/test_qc.py": "0abad8ee1238acf2803bfea38e7a3aeb48cb036ae0cdfbc6398aa4427bf843a6",
+        "configs/config.example.yaml": "f72447b9447cb311eb99ae3ecdbba8fc474a17e8629af9807306eb50c0523bfb"
+      }
+    },
+    "packaging_check": "docs/archive/testing/documentation-layout-20261009/summary.json",
+    "root_markdown": [
+      "README.md"
+    ],
+    "maintained_markdown_directory": "docs/",
+    "latest_fixture_index_update": "2026-10-09T22:22:35.808817+08:00"
+  },
+  "latest_real_fixture_run": {
+    "record": "docs/archive/testing/pipeline-layout-20261010-183901/summary.json",
+    "version": "2.0.0",
+    "completed_at": "2026-10-10T18:54:58.052221+08:00",
+    "read_pairs": 200000,
+    "stages": 24,
+    "wall_seconds": 256.4975452013314,
+    "parquet_compression": "snappy",
+    "all_logical_rows_and_schemas_equal": true,
+    "parquet_files": 92,
+    "report_workbooks": 5,
+    "operation": "pipeline_layout_full_rerun",
+    "previous_complete_run": {
+      "record": "docs/archive/testing/pi-seq-dev-2.0.0-snappy-20261009-234838/summary.json",
+      "version": "2.0.0",
+      "completed_at": "2026-10-10T00:09:13.192555+08:00",
+      "parquet_compression": "snappy",
+      "read_pairs": 200000,
+      "stages": 24,
+      "all_logical_rows_and_schemas_equal": true,
+      "parquet_files": 92,
+      "reports": {
+        "workbooks": 7,
+        "html": 13
+      },
+      "output_layout_update": "docs/archive/testing/report-layout-20261010-002219/summary.json",
+      "batch_workbook_update": "docs/archive/testing/merged-batch-report-20261010-003646/summary.json",
+      "compact_output_update": "docs/archive/testing/compact-output-20261010-005722/summary.json"
+    },
+    "release_follow_up": {
+      "topic": "quick-test segment linker diagnostic reproducibility",
+      "samples": [
+        "100-2-SLE1",
+        "100-5-N2"
+      ],
+      "diagnostic_fields_changed": 44,
+      "sample_counts_and_correction_qc_equal": true,
+      "formal_tables_and_qc_equal": true,
+      "cause": "not confirmed",
+      "release_investigation_pending": true,
+      "evidence": "docs/archive/testing/pipeline-layout-20261010-183901/fixture-verification.json"
+    }
+  },
+  "post_release_changes": {
+    "change": "Default all Parquet outputs and exports to Snappy; configurable ZSTD and codec-aware checkpoint invalidation",
+    "source_snapshot": "docs/archive/testing/pi-seq-dev-2.0.0-snappy-20261009-234838/source",
+    "source_audit": "docs/archive/testing/pi-seq-dev-2.0.0-snappy-20261009-234838/source-sha256.json",
+    "full_tests": {
+      "python311": {
+        "result": "OK",
+        "count": 96,
+        "elapsed_seconds": 18.281,
+        "log": "docs/archive/testing/pi-seq-dev-2.0.0-snappy-20261009-234838/tests.log"
+      },
+      "python39": {
+        "result": "OK",
+        "count": 96,
+        "elapsed_seconds": 32.253,
+        "log": "docs/archive/testing/pi-seq-dev-2.0.0-snappy-20261009-234838/tests-python39.log"
+      },
+      "python313": {
+        "result": "OK",
+        "count": 96,
+        "elapsed_seconds": 31.266,
+        "log": "docs/archive/testing/pi-seq-dev-2.0.0-snappy-20261009-234838/tests-python313.log"
+      }
+    },
+    "verification": "docs/archive/testing/pi-seq-dev-2.0.0-snappy-20261009-234838/compression-verification.json",
+    "package_rebuild_pending": true
+  },
+  "report_layout_update": {
+    "change": "All batch reports under output_dir/00_report; remove fixture manual export copies",
+    "archive": "docs/archive/testing/report-layout-20261010-002219",
+    "source_snapshot": "docs/archive/testing/report-layout-20261010-002219/source",
+    "source_audit": "docs/archive/testing/report-layout-20261010-002219/source-sha256.json",
+    "full_tests": {
+      "python": "3.11",
+      "count": 97,
+      "result": "OK",
+      "elapsed_seconds": 18.455,
+      "log": "tests.log"
+    },
+    "verification": "docs/archive/testing/report-layout-20261010-002219/summary.json",
+    "package_rebuild_pending": true
+  },
+  "batch_workbook_merge": {
+    "source_snapshot": "docs/archive/testing/merged-batch-report-20261010-003646/source",
+    "source_audit": "docs/archive/testing/merged-batch-report-20261010-003646/source-sha256.json",
+    "verification": "docs/archive/testing/merged-batch-report-20261010-003646/summary.json",
+    "full_tests": {
+      "python311": {
+        "count": 100,
+        "elapsed_seconds": 20.133,
+        "result": "OK",
+        "log": "tests.log"
+      },
+      "python39": {
+        "count": 100,
+        "elapsed_seconds": 25.245,
+        "result": "OK",
+        "log": "tests-python39.log"
+      },
+      "python313": {
+        "count": 100,
+        "elapsed_seconds": 24.295,
+        "result": "OK",
+        "log": "tests-python313.log"
+      }
+    },
+    "package_rebuild_pending": true
+  },
+  "routine_testing_scope": "Routine changes and release validation use only /data/home/yfu/miniconda3/envs/tagforge/bin/python (Python 3.11), with checks relevant to the change. No additional or cross-version environments unless the user changes this scope.",
+  "compact_output_update": {
+    "source_snapshot": "docs/archive/testing/compact-output-20261010-005722/source",
+    "source_audit": "docs/archive/testing/compact-output-20261010-005722/source-sha256.json",
+    "verification": "docs/archive/testing/compact-output-20261010-005722/summary.json",
+    "targeted_validation": {
+      "environment": "Current development Python 3.11",
+      "distinct_cases": 17,
+      "result": "OK",
+      "logs": [
+        "targeted-tests.log",
+        "targeted-recheck.log",
+        "targeted-final.log",
+        "targeted-compact-check.log",
+        "selection-validation.log"
+      ],
+      "note": "Initial checks exposed obsolete references and test assumptions; only failed cases were repeated after fixes. No full-suite or cross-version run."
+    },
+    "package_rebuild_pending": true
+  },
+  "temporary_work_layout_update": {
+    "verification": "docs/archive/testing/remove-tmp-directory-20261010-012400/summary.json",
+    "source_audit": "docs/archive/testing/remove-tmp-directory-20261010-012400/source-sha256.json",
+    "targeted_tests": {
+      "python": "3.11",
+      "count": 6,
+      "result": "OK"
+    },
+    "fixture_stages_current": 24,
+    "fixture_rerun": false,
+    "package_rebuild_pending": true
+  },
+  "current_validation_environment": {
+    "python": "3.11",
+    "executable": "/data/home/yfu/miniconda3/envs/tagforge/bin/python",
+    "cross_version_required": false,
+    "create_test_environments": false
+  },
+  "historical_archive_cleanup": {
+    "record": "docs/archive/validation/testing-cleanup-20261010.json",
+    "archive_root": "docs/archive/testing",
+    "path_mapping": "docs/archive/testing/relocation.json",
+    "historical_environment_paths_are_provenance_only": true
+  },
+  "manifest_filename_update": {
+    "archive": "docs/archive/testing/manifest-naming-20261010-173845",
+    "verification": "docs/archive/testing/manifest-naming-20261010-173845/summary.json",
+    "changed_source_audit": "docs/archive/testing/manifest-naming-20261010-173845/source-sha256.json",
+    "targeted_tests": {
+      "python": "3.11",
+      "count": 7,
+      "result": "OK"
+    },
+    "fixture_manifests_renamed": 24,
+    "fixture_rerun": false,
+    "package_rebuild_pending": true
+  },
+  "pipeline_layout_update": {
+    "change": "Sequential processing directories; valid reads under correction; numbered manifests nested in logs; library-specific main-result entry points in existing reports",
+    "archive": "docs/archive/testing/pipeline-layout-20261010-183901",
+    "targeted_tests": 12,
+    "python": "/data/home/yfu/miniconda3/envs/tagforge/bin/python",
+    "verification": "docs/archive/testing/pipeline-layout-20261010-183901/fixture-verification.json",
+    "summary": "docs/archive/testing/pipeline-layout-20261010-183901/summary.json",
+    "source_snapshot": "docs/archive/testing/pipeline-layout-20261010-183901/source",
+    "package_rebuild_pending": true,
+    "frozen_package_includes_change": false,
+    "release_follow_up": {
+      "topic": "quick-test segment linker diagnostic reproducibility",
+      "samples": [
+        "100-2-SLE1",
+        "100-5-N2"
+      ],
+      "diagnostic_fields_changed": 44,
+      "sample_counts_and_correction_qc_equal": true,
+      "formal_tables_and_qc_equal": true,
+      "cause": "not confirmed",
+      "release_investigation_pending": true,
+      "evidence": "docs/archive/testing/pipeline-layout-20261010-183901/fixture-verification.json"
+    }
+  }
+}

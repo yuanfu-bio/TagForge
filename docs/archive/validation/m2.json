@@ -1,0 +1,71 @@
+{
+  "date": "2026-10-09",
+  "milestone": "M2",
+  "development_version": "0.1.14",
+  "source_audit": "docs/archive/testing/m2-20261009/source-sha256.json",
+  "runtime": {
+    "python": "3.11.15",
+    "cutadapt": "5.2",
+    "umi-tools": "1.1.6",
+    "pyarrow": "25.0.0",
+    "duckdb": "1.5.5"
+  },
+  "tests": {
+    "count": 63,
+    "result": "OK",
+    "elapsed_seconds": 16.522,
+    "log": "docs/archive/testing/m2-20261009/tests.log"
+  },
+  "real_pipeline": {
+    "paired_records": 200000,
+    "result": "OK",
+    "resource_record": "docs/archive/testing/m2-20261009/real-run.time.txt"
+  },
+  "comparison": [
+    {
+      "sample": "100-1-N1",
+      "molecule_rows_and_matrix_pairs_equal": true,
+      "matrix_qc_downsample_equal": true,
+      "existing_correction_stats_equal": true,
+      "exclusive_filter_counters_reconcile": true
+    },
+    {
+      "sample": "100-2-SLE1",
+      "molecule_rows_and_matrix_pairs_equal": true,
+      "matrix_qc_downsample_equal": true,
+      "existing_correction_stats_equal": true,
+      "exclusive_filter_counters_reconcile": true
+    },
+    {
+      "sample": "100-3-SLE2",
+      "molecule_rows_and_matrix_pairs_equal": true,
+      "matrix_qc_downsample_equal": true,
+      "existing_correction_stats_equal": true,
+      "exclusive_filter_counters_reconcile": true
+    },
+    {
+      "sample": "100-5-N2",
+      "molecule_rows_and_matrix_pairs_equal": true,
+      "matrix_qc_downsample_equal": true,
+      "existing_correction_stats_equal": true,
+      "exclusive_filter_counters_reconcile": true
+    }
+  ],
+  "rerun": {
+    "completed_stages": 24,
+    "all_generations_unchanged": true
+  },
+  "storage": {
+    "snapshot": "docs/archive/testing/m2-20261009/validation",
+    "output": "docs/archive/testing/m2-20261009/validation/tests/fixtures/pi_seq_dev/02_output"
+  },
+  "scope": [
+    "Shared read eligibility and explicit QC thresholds",
+    "Typed Parquet and full multi-segment annotation QC with trace on/off",
+    "Configuration flags, full-depth reporting and PB-CB alias/UMI merging"
+  ],
+  "remaining": [
+    "M3 strategy and performance validation",
+    "M4 package, compatibility, migration and release readiness audit"
+  ]
+}

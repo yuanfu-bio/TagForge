@@ -1,0 +1,199 @@
+{
+  "status": "candidate_validation_passed_superseded_by_rc2",
+  "version": "2.0.0rc1",
+  "requires_python": ">=3.9",
+  "source_matches_wheel": true,
+  "real_fastq_excluded": true,
+  "source_audit": "docs/archive/testing/m4-20261009/rc1-source-sha256.json",
+  "hashes": {
+    "tagforge-2.0.0rc1-py3-none-any.whl": "7aa3ada563a47e690f11ff4d792c19a0239918432ffc5e788a6e6f78fd45d321",
+    "tagforge-2.0.0rc1.tar.gz": "4588caaf2df5d336d77d25204b15cf758f7653d89c8e33a79f9cbaed7caeba09"
+  },
+  "full_tests": {
+    "count": 82,
+    "python": "3.11.15",
+    "result": "OK",
+    "elapsed_seconds": 18.858,
+    "log": "docs/archive/testing/m4-20261009/tests-rc1-311.log"
+  },
+  "installed_checks": {
+    "python39": {
+      "python": "3.9.23 | packaged by conda-forge | (main, Jun  4 2025, 17:57:12) \n[GCC 13.3.0]",
+      "package_path": "/data/project/yanhuixu/yfu/TagForge/tests/validation/02_output/m4-20261009/env39/lib/python3.9/site-packages/tagforge/__init__.py",
+      "versions": {
+        "tagforge": "2.0.0rc1",
+        "cutadapt": "5.2",
+        "umi-tools": "1.1.6",
+        "duckdb": "1.4.5",
+        "pyarrow": "21.0.0",
+        "numpy": "2.0.2",
+        "pandas": "2.3.3",
+        "PyYAML": "6.0.3"
+      },
+      "cases": [
+        {
+          "case": "ordinary",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "pi",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "mapping",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "multi",
+          "samples": [
+            "demo-A",
+            "demo-B"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        }
+      ],
+      "commands": 31,
+      "result": "OK",
+      "scope": "Installed wheel CLI, all library types, multi-sample, flags, exports and Slurm syntax"
+    },
+    "python311": {
+      "python": "3.11.15 | packaged by conda-forge | (main, Jun 11 2026, 03:34:02) [GCC 14.3.0]",
+      "package_path": "/data/project/yanhuixu/yfu/TagForge/tests/validation/02_output/m4-20261009/env311/lib/python3.11/site-packages/tagforge/__init__.py",
+      "versions": {
+        "tagforge": "2.0.0rc1",
+        "cutadapt": "5.2",
+        "umi-tools": "1.1.6",
+        "duckdb": "1.5.6",
+        "pyarrow": "26.0.0",
+        "numpy": "2.4.6",
+        "pandas": "3.0.6",
+        "PyYAML": "6.0.3"
+      },
+      "cases": [
+        {
+          "case": "ordinary",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "pi",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "mapping",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "multi",
+          "samples": [
+            "demo-A",
+            "demo-B"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        }
+      ],
+      "commands": 31,
+      "result": "OK",
+      "scope": "Installed wheel CLI, all library types, multi-sample, flags, exports and Slurm syntax"
+    },
+    "python313": {
+      "python": "3.13.12 | packaged by Anaconda, Inc. | (main, Feb 24 2026, 16:13:31) [GCC 14.3.0]",
+      "package_path": "/data/project/yanhuixu/yfu/TagForge/tests/validation/02_output/m4-20261009/env313/lib/python3.13/site-packages/tagforge/__init__.py",
+      "versions": {
+        "tagforge": "2.0.0rc1",
+        "cutadapt": "5.2",
+        "umi-tools": "1.1.6",
+        "duckdb": "1.5.6",
+        "pyarrow": "26.0.0",
+        "numpy": "2.5.3",
+        "pandas": "3.0.6",
+        "PyYAML": "6.0.3"
+      },
+      "cases": [
+        {
+          "case": "ordinary",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "pi",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "mapping",
+          "samples": [
+            "example"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        },
+        {
+          "case": "multi",
+          "samples": [
+            "demo-A",
+            "demo-B"
+          ],
+          "valid_reads_per_sample": 9,
+          "molecules_per_sample": 6,
+          "result": "OK"
+        }
+      ],
+      "commands": 31,
+      "result": "OK",
+      "scope": "Installed wheel CLI, all library types, multi-sample, flags, exports and Slurm syntax"
+    }
+  },
+  "remaining": [
+    "Final release artifact/documentation/requirement audit"
+  ],
+  "report_open": {
+    "html": 7,
+    "workbooks": 13,
+    "result": "OK",
+    "record": "docs/archive/testing/m4-20261009/report-open-rc1/summary.json"
+  },
+  "superseded_by": "docs/archive/validation/m4-rc2.json"
+}

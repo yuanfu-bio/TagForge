@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 from itertools import islice, repeat
 
 from . import __version__
-from .barcode_correct import WhitelistCorrector, load_fb_annotation, load_whitelist
+from .barcode_correct import (WhitelistCorrector, load_fb_annotation, load_whitelist,
+                              evaluate_extracted_read, REJECTION_REASONS)
 from .config import ConfigError, TagForgeConfig
 from .external_tools import check_external_tools
 from .extract import _extract_record, decode_method_payload, decode_segment_payload
@@ -36,6 +37,12 @@ def _take_leading_records(records, size: int):
     return selected, len(selected)
 
 
+def enforce_quick_test(summary):
+    if summary["qc_failures"]:
+        raise ConfigError("Configured quick-test threshold failed for " + summary["sample"]
+                          + ": " + "; ".join(summary["qc_failures"]))
+
+
 def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
     if max_reads < 1:
         raise ConfigError("quick-test --reads must be >= 1")
@@ -45,6 +52,7 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
     stats_path = dirs["report"] / f"{sample_name}.quick_test.tsv"
     html_path = dirs["report"] / f"{sample_name}.quick_test.html"
     ids_path = dirs["report"] / f"{sample_name}.quick_test.sampled_read_ids.txt"
+    read_qc_path = dirs["report"] / f"{sample_name}.quick_test.read_qc.tsv"
     log_path = dirs["logs"] / f"{sample_name}.quick_test.log"
     logger = sample_logger(f"{sample_name}.quick_test", log_path)
     logger.info(
@@ -71,6 +79,8 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
     segment_counts = {segment.name: Counter() for segment in config.segments}
     r1_lengths, r2_lengths = Counter(), Counter()
     totals = Counter()
+    correction_counters = {s.name: Counter() for s in config.segments if s.target != "umi"}
+    read_qc = []
     barcode1_top, feature_top = Counter(), Counter()
     umi_groups = defaultdict(Counter)
     segment_columns = {
@@ -85,10 +95,14 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
     )
     sampling_elapsed = time.monotonic() - sampling_started
     records = (record for _, record in selected)
-    with atomic_text(ids_path) as handle:
-        handle.write("read_index\tread_id\n")
-        for index, record in selected:
-            handle.write(f"{index}\t{record.read_id}\n")
+    if config.quick_test_read_details:
+        with atomic_text(ids_path) as handle:
+            handle.write("read_index\tread_id\n")
+            for index, record in selected:
+                handle.write(f"{index}\t{record.read_id}\n")
+    else:
+        ids_path.unlink(missing_ok=True)
+
     if config.threads == 1:
         extracted = (
             _quick_extract(record, config.segments, segment_columns)
@@ -121,7 +135,6 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
             extraction_methods = decode_method_payload(
                 row["methods"], config.segments
             )
-            corrected_by_target = {"barcode1": [], "barcode2": []}
             for segment in config.segments:
                 count = segment_counts[segment.name]
                 stat = runtime[segment.name]
@@ -150,14 +163,18 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
                     )
                     count["barcode_valid"] += int(correction.success)
                     count[f"correction_{correction.correction_type}"] += 1
-                    corrected_by_target[segment.target].append(correction.corrected_sequence)
-            barcode1 = "".join(corrected_by_target["barcode1"])
-            barcode2 = "".join(corrected_by_target["barcode2"])
-            umi = "".join(raw_by_target["umi"].get(s.name, "") for s in config.segments if s.target == "umi")
-            feature = barcode2 if getattr(config, "barcode2_sequence_only", False) else annotation.get(barcode2, "")
-            valid = bool(barcode1 and feature and umi and "N" not in umi)
-            totals["combined_valid"] += int(valid)
-            if valid:
+            local_summary = Counter()
+            valid_row, _ = evaluate_extracted_read(row, config, correctors, annotation,
+                                                   correction_counters, local_summary)
+            totals.update(local_summary)
+            reason = next((r for r in REJECTION_REASONS if local_summary[f"failure_{r}"]), "")
+            if config.quick_test_read_details:
+                read_qc.append({"read_id": row["read_id"], "extraction_status": row["status"],
+                            "eligible": str(valid_row is not None).lower(), "rejection_reason": reason})
+            if valid_row is not None:
+                barcode1 = valid_row[config.target_name("barcode1")]
+                feature = valid_row[f"{config.target_name('barcode2')}_name"]
+                umi = valid_row[config.target_name("umi")]
                 barcode1_top[barcode1] += 1
                 feature_top[feature] += 1
                 umi_groups[(barcode1, feature)][umi] += 1
@@ -173,11 +190,22 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
         molecules += len(set(assignments.values()))
     elapsed = time.monotonic() - started
     valid_reads = totals["combined_valid"]
+    valid_rate = _rate(valid_reads, totals["reads"])
+    n_base_rate = _rate(totals["n_bases"], totals["bases"])
+    failures = []
+    min_valid = config.quick_test_min_valid_rate
+    max_n = config.quick_test_max_n_base_rate
+    if min_valid is not None and valid_rate < min_valid:
+        failures.append(f"valid_rate={valid_rate:.6f} < min_valid_rate={min_valid}")
+    if max_n is not None and n_base_rate > max_n:
+        failures.append(f"n_base_rate={n_base_rate:.6f} > max_n_base_rate={max_n}")
+    qc_status = "failed" if failures else "passed" if min_valid is not None or max_n is not None else "diagnostic"
     metric_rows = [
         {"scope": "sample", "metric": "tagforge_version", "value": __version__},
         {"scope": "sample", "metric": "reads_examined", "value": totals["reads"]},
         {"scope": "sample", "metric": "reads_scanned", "value": reads_scanned},
         {"scope": "sample", "metric": "sampling_method", "value": "leading_reads"},
+        {"scope": "sample", "metric": "qc_status", "value": qc_status},
         {"scope": "sample", "metric": "sampling_seconds", "value": f"{sampling_elapsed:.6f}"},
         {"scope": "sample", "metric": "scan_reads_per_second", "value": f"{reads_scanned / sampling_elapsed:.3f}" if sampling_elapsed else "0"},
         {"scope": "sample", "metric": "workers", "value": config.threads},
@@ -194,8 +222,12 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
         {"scope": "sample", "metric": "combined_valid_reads", "value": valid_reads},
         {"scope": "sample", "metric": "combined_valid_rate", "value": f"{_rate(valid_reads, totals['reads']):.8f}"},
         {"scope": "sample", "metric": "deduplicated_molecules", "value": molecules},
-        {"scope": "sample", "metric": "duplication_ratio", "value": f"{_rate(valid_reads - molecules, valid_reads):.8f}"},
+        {"scope": "sample", "metric": "duplication_ratio", "value": f"{100 * _rate(valid_reads - molecules, valid_reads):.8f}"},
+        {"scope": "sample", "metric": "duplication_ratio_unit", "value": "percent"},
+        {"scope": "sample", "metric": "rate_unit", "value": "fraction"},
     ]
+    metric_rows.extend({"scope": "rejection", "metric": reason, "value": totals[f"failure_{reason}"]}
+                       for reason in REJECTION_REASONS)
     for segment in config.segments:
         count = segment_counts[segment.name]
         scope = f"segment:{segment.name}"
@@ -220,6 +252,10 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
     for rank, (feature, count) in enumerate(feature_top.most_common(10), 1):
         metric_rows.append({"scope": "top_feature", "metric": f"{rank}:{feature}", "value": count})
     write_tsv(stats_path, ["scope", "metric", "value"], metric_rows)
+    if config.quick_test_read_details:
+        write_tsv(read_qc_path, ["read_id", "extraction_status", "eligible", "rejection_reason"], read_qc)
+    else:
+        read_qc_path.unlink(missing_ok=True)
 
     segment_html = "".join(
         f"<tr><td>{html.escape(segment.name)}</td><td>{html.escape(segment.method)}</td>"
@@ -229,8 +265,11 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
         for segment in config.segments
     )
     page = f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge quick test · {html.escape(sample_name)}</title><style>
-body{{margin:0;background:#07111f;color:#e5edf8;font:15px system-ui}}main{{max-width:1100px;margin:auto;padding:36px}}.cards{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}}.card,.panel{{background:#0f1d30;border:1px solid #24344d;border-radius:14px;padding:18px}}.value{{font-size:26px;color:#5eead4;font-weight:700}}.panel{{margin-top:18px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px;text-align:left;border-bottom:1px solid #24344d}}</style></head><body><main>
-<p>TAGFORGE {__version__} / QUICK TEST</p><h1>{html.escape(sample_name)}</h1><div class="cards">
+body{{margin:0;background:#07111f;color:#e5edf8;font:15px Arial,sans-serif}}main{{max-width:1100px;margin:auto;padding:36px}}.cards{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}}.card,.panel{{background:#0f1d30;border:1px solid #24344d;border-radius:14px;padding:18px}}.value{{font-size:26px;color:#5eead4;font-weight:700}}.panel{{margin-top:18px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px;text-align:left;border-bottom:1px solid #24344d}}</style></head><body><main>
+<p>TAGFORGE {__version__} / QUICK TEST</p><h1>{html.escape(sample_name)}</h1>
+<p>QC status: {qc_status}. Leading-read prefix diagnostic; not a random population sample.</p>
+<p>Duplication: {100 * _rate(valid_reads - molecules, valid_reads):.2f}% of eligible reads beyond one read per detected molecule. TSV rates use fractions (0–1); duplication uses percent (0–100).</p>
+<p>{html.escape('; '.join(failures))}</p><div class="cards">
 <div class="card"><span>Reads</span><div class="value">{totals['reads']:,}</div></div><div class="card"><span>Valid</span><div class="value">{_rate(valid_reads, totals['reads']):.1%}</div></div><div class="card"><span>Molecules</span><div class="value">{molecules:,}</div></div><div class="card"><span>Speed</span><div class="value">{totals['reads']/elapsed:,.0f}/s</div></div></div>
 <section class="panel"><h2>Segment QC</h2><table><tr><th>Segment</th><th>Mode</th><th>Extracted</th><th>Linker success</th><th>Fixed reads</th></tr>{segment_html}</table></section>
 <section class="panel"><h2>Top features</h2><table>{''.join(f'<tr><td>{html.escape(k)}</td><td>{v}</td></tr>' for k,v in feature_top.most_common(10))}</table></section>
@@ -245,7 +284,8 @@ body{{margin:0;background:#07111f;color:#e5edf8;font:15px system-ui}}main{{max-w
         reads_scanned, totals["reads"], sampling_elapsed, elapsed, stats_path, html_path, ids_path,
     )
     return {
-        "sample": sample_name, "reads": totals["reads"], "valid_rate": _rate(valid_reads, totals["reads"]),
+        "sample": sample_name, "reads": totals["reads"], "valid_rate": valid_rate,
+        "qc_status": qc_status, "qc_failures": failures, "read_qc": read_qc_path if config.quick_test_read_details else None,
         "molecules": molecules, "elapsed": elapsed, "reads_scanned": reads_scanned,
-        "stats": stats_path, "html": html_path, "read_ids": ids_path, "log": log_path,
+        "stats": stats_path, "html": html_path, "read_ids": ids_path if config.quick_test_read_details else None, "log": log_path,
     }

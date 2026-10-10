@@ -1,0 +1,141 @@
+# Compact four-sample PI-seq fixture for TagForge development.
+# Coordinates are 0-based half-open intervals [start, start + length).
+project:
+  name: tagforge_pi_seq_dev
+  workdir: ..
+  output_dir: 02_output
+
+library:
+  type: PI-seq
+
+pi_seq:
+  dominance_threshold: 0.8
+
+samples:
+  - sample: 100-1-N1
+    r1: 01_raw/100-1-N1/100-1-N1_raw_1.fq.gz
+    r2: 01_raw/100-1-N1/100-1-N1_raw_2.fq.gz
+  - sample: 100-2-SLE1
+    r1: 01_raw/100-2-SLE1/100-2-SLE1_raw_1.fq.gz
+    r2: 01_raw/100-2-SLE1/100-2-SLE1_raw_2.fq.gz
+  - sample: 100-3-SLE2
+    r1: 01_raw/100-3-SLE2/100-3-SLE2_raw_1.fq.gz
+    r2: 01_raw/100-3-SLE2/100-3-SLE2_raw_2.fq.gz
+  - sample: 100-5-N2
+    r1: 01_raw/100-5-N2/100-5-N2_raw_1.fq.gz
+    r2: 01_raw/100-5-N2/100-5-N2_raw_2.fq.gz
+
+barcode2_annotation:
+  fb_info: 00_config/FB_info.tsv
+  id_column: FB_ID
+  sequence_column: sequence
+  name_column: antibody_name
+
+correction_barcode:
+  enabled: true
+  max_shift: 1
+  max_mismatch: 1
+  allow_shift: true
+  allow_mismatch: true
+
+linker:
+  max_mismatch: 0
+
+barcode1:
+  name: PB
+  segments:
+    - segment: PB1
+      read: R1
+      methods: [linker, fixed]
+      left_linker: TTCAGTCA
+      right_linker: AACC
+      start: 30
+      length: 8
+      whitelist: 00_config/whitelist/PI_1.txt
+    - segment: PB2
+      read: R1
+      methods: [linker, fixed]
+      left_linker: AACC
+      right_linker: ACAG
+      start: 42
+      length: 8
+      whitelist: 00_config/whitelist/PI_2.txt
+    - segment: PB3
+      read: R1
+      methods: [linker, fixed]
+      left_linker: ACAG
+      right_linker: CCTA
+      start: 54
+      length: 8
+      whitelist: 00_config/whitelist/PI_3.txt
+    - segment: PB4
+      read: R1
+      methods: [linker, fixed]
+      left_linker: CCTA
+      right_linker: GGAA
+      start: 66
+      length: 8
+      whitelist: 00_config/whitelist/PI_4.txt
+    - segment: PB5
+      read: R1
+      methods: [linker, fixed]
+      left_linker: GGAA
+      right_linker: TTTCTTAT
+      start: 78
+      length: 8
+      whitelist: 00_config/whitelist/PI_5.txt
+
+barcode2:
+  name: FB
+  segments:
+    - segment: FB
+      read: R2
+      method: fixed
+      start: 8
+      length: 12
+      whitelist: 00_config/whitelist/FB12nt.txt
+
+umi:
+  name: UMI
+  correction_method: directional
+  max_distance: 1
+  segments:
+    - segment: UMI1
+      read: R2
+      method: fixed
+      start: 0
+      length: 8
+    - segment: UMI2
+      read: R2
+      method: fixed
+      start: 20
+      length: 8
+
+downsample:
+  enabled: true
+  ratios: [0.1, 0.25, 0.5, 0.75, 1.0]
+  random_seed: 42
+
+quick_test:
+  enabled: true
+  reads: 10000
+
+output:
+  quick_test_read_details: false
+
+performance:
+  extraction_preview_reads: 0
+  threads: 4
+  barcode_workers: 2
+  umi_aggregation_backend: external_sort
+  umi_aggregation_workers: 2
+  umi_sort_memory_mb: 512
+  umi_workers: 2
+  umi_batch_size: 25000
+  chunk_size: 10000
+  parquet_compression: snappy  # snappy (default) or zstd
+  compression_level: 3  # gzip, and Parquet only when using zstd
+
+resume:
+  enabled: true
+  overwrite: false

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import gzip
-import hashlib
 import json
 import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -10,15 +9,15 @@ from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from functools import lru_cache
-from itertools import repeat
+from itertools import islice, repeat
 import time
 from typing import Optional
 
 from . import __version__
-from .columnar import ParquetFragmentWriter, parquet_size
+from .columnar import ParquetFragmentWriter, open_records, parquet_size
 from .config import ConfigError, SegmentConfig, TagForgeConfig
 from .fastq import paired_fastq_batches
-from .io_utils import atomic_text, sample_dirs, write_tsv
+from .io_utils import atomic_text, sample_dirs, write_progress, write_tsv
 from .logging_utils import sample_logger
 
 
@@ -82,7 +81,8 @@ def _find_all_linkers(sequence: str, linker: str, max_mismatch: int) -> list[int
     return positions
 
 
-def _closest_linker_pair(sequence: str, left: str, right: str, max_mismatch: int):
+def _closest_linker_pair(sequence: str, left: str, right: str, max_mismatch: int,
+                         *, length=None, start=None, strategy="legacy_shortest"):
     left_positions = _find_all_linkers(sequence, left, max_mismatch)
     right_positions = _find_all_linkers(sequence, right, max_mismatch)
     pairs = [
@@ -92,6 +92,21 @@ def _closest_linker_pair(sequence: str, left: str, right: str, max_mismatch: int
         if right_position >= left_position + len(left)
     ]
     selected = min(pairs, key=lambda item: (item[0], item[1], item[2])) if pairs else None
+    if strategy == "length_position":
+        candidates = [pair for pair in pairs if pair[0] == length]
+        if candidates:
+            def score(pair):
+                _, left_position, right_position = pair
+                distance = abs(left_position + len(left) - start) if start is not None else 0
+                errors = (hamming(sequence[left_position:left_position + len(left)], left)
+                          + hamming(sequence[right_position:right_position + len(right)], right))
+                return distance, errors
+            best_score = min(map(score, candidates))
+            best = [pair for pair in candidates if score(pair) == best_score]
+            values = {sequence[pair[1] + len(left):pair[2]] for pair in best}
+            # Equally supported candidates with different tags are ambiguous;
+            # linker/fixed configurations may still use their declared fallback.
+            selected = min(best, key=lambda pair: pair[1:]) if len(values) == 1 else None
     return selected, len(left_positions), len(right_positions), len(pairs)
 
 
@@ -118,7 +133,8 @@ def _extract_linker_impl(sequence: str, segment: SegmentConfig) -> SegmentExtrac
     selected_gap = -1
     if segment.left_linker and segment.right_linker:
         selected, left_matches, right_matches, candidate_pairs = _closest_linker_pair(
-            sequence, segment.left_linker, segment.right_linker, segment.linker_max_mismatch
+            sequence, segment.left_linker, segment.right_linker, segment.linker_max_mismatch,
+            length=segment.length, start=segment.start, strategy=segment.linker_strategy,
         )
         if not left_matches:
             return SegmentExtractionResult(
@@ -127,6 +143,10 @@ def _extract_linker_impl(sequence: str, segment: SegmentConfig) -> SegmentExtrac
                 linker_candidate_pairs=candidate_pairs,
             )
         if selected is None:
+            if candidate_pairs and segment.linker_strategy == "length_position":
+                return SegmentExtractionResult(segment.name, "", False, "ambiguous_linker_pair", "linker",
+                    left_linker_matches=left_matches, right_linker_matches=right_matches,
+                    linker_candidate_pairs=candidate_pairs)
             return SegmentExtractionResult(
                 segment.name, "", False, "right_linker_not_found_after_left", "linker",
                 left_linker_matches=left_matches, right_linker_matches=right_matches,
@@ -313,21 +333,17 @@ def decode_method_payload(payload: str, segments) -> dict[str, str]:
 
 
 def _resume_fingerprint(config: TagForgeConfig, sample) -> str:
-    digest = hashlib.sha256()
-    digest.update(config.path.read_bytes())
-    for path in (sample.r1, sample.r2):
-        stat = path.stat()
-        digest.update(f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode())
-    return digest.hexdigest()
+    from .checkpoint import resume_fingerprint
+    return resume_fingerprint(config, sample.sample, "extract")
 
 
-def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True):
+def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True, *, keep_resume: bool = False):
     sample = config.sample(sample_name)
     dirs = sample_dirs(config.output_dir, sample_name)
     parquet_output = dirs["extracted"] / f"{sample_name}.extracted.parquet"
     stats_output = dirs["extracted"] / f"{sample_name}.extraction_stats.tsv"
     preview_output = dirs["extracted"] / f"{sample_name}.extracted.preview.tsv"
-    progress_output = dirs["logs"] / f"{sample_name}.extraction_progress.tsv"
+    progress_output = dirs["logs"] / f"{sample_name}.progress.json"
     resume_path = dirs["checkpoint"] / f"{sample_name}.extract.resume.json"
     fields = extract_fields(config)
     segment_columns = {
@@ -346,7 +362,7 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
 
     def save_resume():
         state = {
-            "schema": 3, "tagforge_version": __version__, "fingerprint": fingerprint,
+            "schema": 4, "tagforge_version": __version__, "fingerprint": fingerprint,
             "reads_completed": totals["total_reads"],
             "extracted_reads": totals["extracted_reads"],
             "safe_output_parts": output_writer.part,
@@ -361,7 +377,7 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
     resumed = False
     if resume_path.exists() and resume:
         state = json.loads(resume_path.read_text(encoding="utf-8"))
-        if state.get("schema") != 3 or state.get("tagforge_version") != __version__ or state.get("fingerprint") != fingerprint:
+        if state.get("schema") != 4 or state.get("fingerprint") != fingerprint:
             raise ConfigError(
                 f"Extraction resume state does not match current inputs/config: {resume_path}. "
                 "Use --overwrite to restart safely."
@@ -369,8 +385,10 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         output_writer = ParquetFragmentWriter(
             parquet_output, fields, config.chunk_size, resume=True,
             parts=int(state["safe_output_parts"]),
-        )
+         compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
         totals["total_reads"] = int(state["reads_completed"])
+        if output_writer.rows != totals["total_reads"]:
+            raise ConfigError("Committed extraction rows disagree with resume counters; use --overwrite")
         totals["extracted_reads"] = int(state["extracted_reads"])
         previous_elapsed = float(state.get("elapsed_seconds", 0.0))
         resume_fraction_known = "input_fraction" in state
@@ -386,14 +404,9 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                 f"Untracked extraction Parquet dataset cannot be resumed safely: {parquet_output}. "
                 "Use --overwrite to restart."
             )
-        output_writer = ParquetFragmentWriter(parquet_output, fields, config.chunk_size)
+        output_writer = ParquetFragmentWriter(parquet_output, fields, config.chunk_size, compression_level=getattr(config, "compression_level", 3), compression=getattr(config, "parquet_compression", "snappy"))
         resume_path.unlink(missing_ok=True)
         save_resume()
-    progress_fields = [
-        "status", "reads_completed", "input_percent", "elapsed_seconds",
-        "reads_per_second", "eta_seconds", "estimated_finish", "resume_skip_percent",
-        "output_tmp_bytes",
-    ]
 
     def update_progress(status: str, input_fraction: float | None, resume_skip: float | None = None):
         elapsed = previous_elapsed + time.monotonic() - started
@@ -414,7 +427,7 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             "resume_skip_percent": f"{resume_skip * 100:.2f}" if resume_skip is not None else "",
             "output_tmp_bytes": parquet_size(parquet_output),
         }
-        write_tsv(progress_output, progress_fields, [row])
+        write_progress(progress_output, sample_name, "extract", row)
         logger.info(
             "extract_progress\treads=%s\tinput_percent=%s\treads_per_second=%s\t"
             "eta_seconds=%s\testimated_finish=%s\tresume_skip_percent=%s\tstatus=%s",
@@ -432,13 +445,18 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
             )
 
     executor = None
-    preview_mode = "a" if resumed and preview_output.exists() else "w"
-    preview_handle = open(preview_output, preview_mode, encoding="utf-8", newline="")
-    preview_writer = csv.DictWriter(
-        preview_handle, fieldnames=fields, delimiter="\t", lineterminator="\n"
-    )
-    if preview_mode == "w": preview_writer.writeheader()
-    preview_handle.flush()
+    preview_handle = None
+    preview_writer = None
+    if config.extraction_preview_reads > 0:
+        preview_handle = open(preview_output, "w", encoding="utf-8", newline="")
+        preview_writer = csv.DictWriter(preview_handle, fieldnames=fields, delimiter="\t", lineterminator="\n")
+        preview_writer.writeheader()
+        if resumed and output_writer.rows:
+            preview_writer.writerows(islice(open_records(parquet_output),
+                min(totals["total_reads"], config.extraction_preview_reads)))
+        preview_handle.flush()
+    else:
+        preview_output.unlink(missing_ok=True)
     try:
         if config.threads == 1:
             totals["parallel_backend"] = "serial"
@@ -525,21 +543,23 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
                         counter["fixed_success"] += int(fixed_success)
                         counter["fixed_failed"] += int(not fixed_success)
                 output_writer.writerow(row)
-                if totals["total_reads"] <= config.extraction_preview_reads:
+                if preview_writer is not None and totals["total_reads"] <= config.extraction_preview_reads:
                     preview_writer.writerow(row)
-            preview_handle.flush()
+            if preview_handle is not None:
+                preview_handle.flush()
             output_writer.flush()
             last_input_fraction = max(last_input_fraction, input_fraction)
             save_resume()
             update_progress("running", last_input_fraction)
         output_writer.close()
-        resume_path.unlink(missing_ok=True)
+        save_resume()
         update_progress("completed", 1.0)
     except Exception:
         update_progress("failed", 0.0)
         raise
     finally:
-        preview_handle.close()
+        if preview_handle is not None:
+            preview_handle.close()
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
     wall_seconds = previous_elapsed + time.monotonic() - started
@@ -591,4 +611,6 @@ def extract_sample(config: TagForgeConfig, sample_name: str, resume: bool = True
         "cutadapt_cpu_seconds": sum(c["cutadapt_microseconds"] for c in segment_counters.values()) / 1_000_000,
         "segment_stats": stats_rows,
     })
+    if not keep_resume:
+        resume_path.unlink(missing_ok=True)
     return [parquet_output, stats_output], totals

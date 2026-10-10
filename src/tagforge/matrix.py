@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import csv
 import gzip
+import json
 import sqlite3
 from pathlib import Path
 
-from .columnar import open_records
+from .columnar import open_records, resolve_table
 from .config import TagForgeConfig
 from .io_utils import atomic_text, open_tsv, sample_dirs
 
@@ -28,7 +29,7 @@ def _observed_cb_aliases(cb_counts, min_parent_reads: int, parent_child_ratio: f
         candidates = {}
         for key in keys:
             for parent, parent_reads in index.get(key, ()):
-                if parent != cb and parent_reads >= child_reads * parent_child_ratio:
+                if parent != cb and parent_reads > child_reads and parent_reads >= child_reads * parent_child_ratio:
                     candidates[parent] = parent_reads
         if len(candidates) == 1:
             parent, parent_reads = next(iter(candidates.items()))
@@ -77,15 +78,16 @@ def matrix_from_molecules(
 
 def matrix_sample(config: TagForgeConfig, sample_name: str):
     dirs = sample_dirs(config.output_dir, sample_name)
-    source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.parquet" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.parquet")
-    if not source.exists():
-        source = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.tsv.gz" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.tsv.gz")
+    preferred = dirs["detail"] / (f"{sample_name}.molecule_detail.rmMP.parquet" if config.pi_seq_enabled else f"{sample_name}.molecule_detail.parquet")
+    source = resolve_table(preferred, preferred.with_name(preferred.name.replace(".parquet", ".tsv.gz")))
     from .sparse_matrix import build_sparse_matrix
     (dirs["matrix"] / f"{sample_name}.raw_count_matrix.tsv.gz").unlink(missing_ok=True)
     return build_sparse_matrix(
         source, dirs["matrix"], sample_name,
         barcode_col=config.target_name("barcode1"),
         feature_col=f"{config.target_name('barcode2')}_name",
+        threads=config.threads, memory_mb=config.matrix_memory_mb, compression_level=config.compression_level,
+        compression=config.parquet_compression,
     )
 
 
@@ -97,9 +99,8 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
     CB has support strictly greater than the configured dominance threshold.
     """
     dirs = sample_dirs(config.output_dir, sample_name)
-    source = dirs["detail"] / f"{sample_name}.molecule_detail.parquet"
-    if not source.exists():
-        source = dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz"
+    source = resolve_table(dirs["detail"] / f"{sample_name}.molecule_detail.parquet",
+                           dirs["detail"] / f"{sample_name}.molecule_detail.tsv.gz")
     output = dirs["matrix"] / f"{sample_name}.pb_cb_mapping.tsv.gz"
     map_output = dirs["matrix"] / f"{sample_name}.pb_cb_map.tsv.gz"
     cb_counts_output = dirs["matrix"] / f"{sample_name}.cb_pb_counts.tsv.gz"
@@ -113,26 +114,28 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
         con = sqlite3.connect(db)
         try:
             con.execute(
-                "CREATE TABLE mapping (pb TEXT, cb TEXT, molecule_count INTEGER, reads_count INTEGER, "
-                "PRIMARY KEY(pb, cb)) WITHOUT ROWID"
+                "CREATE TABLE molecules (pb TEXT, cb TEXT, umi TEXT, reads_count INTEGER, "
+                "PRIMARY KEY(pb, cb, umi)) WITHOUT ROWID"
             )
             batch = []
             for row in open_records(source):
-                batch.append((row[pb_column], row[cb_column], int(row["reads_count"])))
+                batch.append((row[pb_column], row[cb_column], row["corrected_umi"], int(row["reads_count"])))
                 if len(batch) >= 100000:
                     con.executemany(
-                        "INSERT INTO mapping VALUES (?, ?, 1, ?) "
-                        "ON CONFLICT(pb, cb) DO UPDATE SET molecule_count=molecule_count+1, "
+                        "INSERT INTO molecules VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(pb, cb, umi) DO UPDATE SET "
                         "reads_count=reads_count+excluded.reads_count", batch
                     )
                     con.commit(); batch.clear()
             if batch:
                 con.executemany(
-                    "INSERT INTO mapping VALUES (?, ?, 1, ?) "
-                    "ON CONFLICT(pb, cb) DO UPDATE SET molecule_count=molecule_count+1, "
+                    "INSERT INTO molecules VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(pb, cb, umi) DO UPDATE SET "
                     "reads_count=reads_count+excluded.reads_count", batch
                 )
                 con.commit()
+            con.execute("CREATE TEMP TABLE mapping AS SELECT pb, cb, COUNT(*) AS molecule_count, "
+                        "SUM(reads_count) AS reads_count FROM molecules GROUP BY pb, cb")
             with atomic_text(output, config.compression_level) as handle:
                 writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
                 writer.writerow([pb_column, config.target_name("barcode2"), "molecule_count", "reads_count"])
@@ -162,10 +165,12 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
             )
             con.execute("""
                 INSERT INTO resolved_mapping
-                SELECT mapping.pb, COALESCE(cb_alias.corrected_cb, mapping.cb),
-                       SUM(mapping.molecule_count), SUM(mapping.reads_count)
-                FROM mapping LEFT JOIN cb_alias ON mapping.cb = cb_alias.raw_cb
-                GROUP BY mapping.pb, COALESCE(cb_alias.corrected_cb, mapping.cb)
+                SELECT pb, cb, COUNT(*), SUM(reads_count) FROM (
+                    SELECT molecules.pb, COALESCE(cb_alias.corrected_cb, molecules.cb) AS cb,
+                           molecules.umi, SUM(molecules.reads_count) AS reads_count
+                    FROM molecules LEFT JOIN cb_alias ON molecules.cb = cb_alias.raw_cb
+                    GROUP BY molecules.pb, COALESCE(cb_alias.corrected_cb, molecules.cb), molecules.umi
+                ) GROUP BY pb, cb
             """)
 
             threshold = getattr(config, "pb_cb_dominance_threshold", 0.8)
@@ -215,6 +220,17 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
                 writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
                 writer.writerow(["pb_count", "cb_count"])
                 writer.writerows(distribution)
+            raw_molecules, raw_reads = con.execute("SELECT COALESCE(SUM(molecule_count),0), COALESCE(SUM(reads_count),0) FROM mapping").fetchone()
+            resolved_molecules = con.execute("SELECT COALESCE(SUM(molecule_count),0) FROM resolved_mapping").fetchone()[0]
+            payload = {"schema": 1, "sample": sample_name, "dominance_basis": "read_support",
+                       "dominance_threshold": threshold, "raw_molecules": raw_molecules,
+                       "resolved_molecules": resolved_molecules, "supporting_reads": raw_reads,
+                       "retained_pbs": len(retained), "retained_cbs": len(cb_counts),
+                       "retained_molecules": sum(row[2] for row in retained),
+                       "retained_supporting_reads": sum(row[3] for row in retained),
+                       "cb_aliases": len(aliases)}
+            with atomic_text(dirs["matrix"] / f"{sample_name}.pb_cb_summary.json") as handle:
+                json.dump(payload, handle, sort_keys=True)
             return map_output
         finally:
             con.close()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tagforge"
-version = "0.1.13"
+dynamic = ["version"]
 description = "Streaming barcode and UMI processing for paired-end FASTQ libraries"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -28,6 +28,9 @@ dev = ["pytest>=7", "pytest-cov>=4"]
 
 [project.scripts]
 tagforge = "tagforge.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "tagforge.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

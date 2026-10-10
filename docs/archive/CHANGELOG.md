@@ -1,7 +1,72 @@
-# Changelog
+# Historical changelog
 
-Every code-change release increments the patch component of the TagForge
-version. The version is kept in package metadata, the CLI, and pipeline logs.
+Archived on 2026-10-09. These entries describe their original versions; current
+behavior is documented in [README](../../README.md) and [MIGRATION](../MIGRATION.md).
+
+## 2.0.0rc3 — 2026-10-09
+
+- Use percent for quick-test duplication, matching downsample outputs; record
+  rate/duplication units and document the change from older quick-test files.
+- Add coordinate-change invalidation coverage and installed CLI release audits.
+- Reject ignored UMI whitelist/barcode-correction settings and conflicting
+  segment roles. Require strictly higher support for a CB alias parent,
+  preventing reciprocal aliases when the configured ratio is one.
+- Apply and validate `migrate-parquet --threads` before executing migration.
+- Isolate integration fixture generation and outputs so regression runs do not
+  modify the frozen source or collide across Python environments.
+
+## 2.0.0rc2 — 2026-10-09
+
+- Reject fractional coordinates, counts and resource settings instead of
+  truncating them; reject nonfinite alias ratios and invalid integer values.
+- Include the existing MIT license in staged release artifacts, ignore local
+  real PI-seq FASTQs in Git, and correct manual installation dependencies.
+
+## 2.0.0rc1 — 2026-10-09
+
+Candidate release for the 2.0 configuration, checkpoint and result contracts.
+See MIGRATION.md for required reruns, selected/full-depth behavior and metrics.
+
+- Define `sequencing_saturation` at read level as `(reads - molecules) / reads`,
+  matching the 10x definition, and rename the former singleton-based metric to
+  `non_singleton_molecule_fraction`.
+- Select downsample ratios by repeat mean non-singleton fraction, then select
+  the repeat closest to that mean. Preserve raw repeats, mean/SD, analytical
+  count expectations and criterion metadata; report diagnostic semantics.
+- Add shared formal/quick-test eligibility, mutually exclusive failure counters,
+  explicit optional QC thresholds and trace-independent full-feature annotation QC.
+- Validate typed/empty Parquet datasets, configuration flags and output names;
+  support full-depth reports with downsampling disabled and PB–CB mapping reports.
+- Merge PB–CB alias-shared UMIs under the final mapping and preserve read support.
+- Skip mismatch search after an anchored exact barcode hit, stream sparse matrix
+  aggregation/export and publish batch summaries once per invocation.
+- Add UMI group/component budgets and peak-size metrics; stream components and
+  reconcile SQLite distinct UMI counts across chunks.
+- Add experimental `length_position` linker policy with explicit opt-in;
+  retain `legacy_shortest` as default after reviewing real-read differences.
+- Add `init-example` to generate a standalone deterministic nine-read synthetic
+  project from an installed wheel; exclude real FASTQ fixtures from distributions.
+- Fix Excel default style and frozen-header OOXML, use Arial, and handle
+  case-insensitive worksheet name collisions.
+
+## 0.1.14 — Unreleased
+
+- Replace version-only completion markers with stage-specific input/config
+  fingerprints, upstream generation IDs, validated artifact manifests and
+  dependency-version records; reject stale inputs for independent commands.
+- Compute stages in per-stage work directories, withdraw downstream completion
+  before replacement, and recover interrupted multi-output publication using
+  a journal. Lock same-sample writers while allowing different samples to run.
+- Retain extraction/correction resume state until final statistics and completion
+  publication succeed; validate committed fragments and row counters, and rebuild
+  extraction previews after discarding uncommitted tails.
+- Add explicit downsampling selection references, reuse current full-depth
+  artifacts at ratio 1, verify selected detail/matrix counts, and remove stale
+  optimal/legacy artifacts. PB--CB selection does not construct a count matrix.
+- Rebuild summaries from current stage manifests and explicit selections,
+  including valid empty workbooks when no sample is current.
+- Add fault, configuration-change, fragment-corruption, concurrency, empty
+  selection and repeated-run regressions for the first 2.0.0 repair milestone.
 
 ## 0.1.13 — 2026-06-24
 

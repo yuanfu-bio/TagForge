@@ -1,0 +1,253 @@
+{
+  "date": "2026-10-09",
+  "records": [
+    {
+      "original_path": "TagForge_design.md",
+      "archived_path": "docs/archive/TagForge_design.md",
+      "kind": "file",
+      "original_sha256": "e0b1cf06121eda8676a194ec7644c021f12c23a1f81ecd7600c11c8d5135edf4",
+      "archived_sha256": "12e46df7eadf434d8c6cb6cb5e2c3f126aaea89d8b96d5da98cc9af72536c07b",
+      "previous_archived_sha256": [
+        "837de5a2ec01c9ee2874b9df45ee72fea4476d43cf5d757c4a43a81a3dc02087"
+      ]
+    },
+    {
+      "original_path": "TagForge_2.0.0_plan.md",
+      "archived_path": "docs/archive/2.0.0/TagForge_2.0.0_plan.md",
+      "kind": "file",
+      "original_sha256": "4d1fe2106fd25e7b5fefe9506123e97ac4b6c6a131a7f6a8bedf5bc275b8a7dc",
+      "archived_sha256": "73f3606a55e214b43ebaf5490cc16a18c570a65a41e3e08c7ecd0ad38abaa10b",
+      "previous_archived_sha256": [
+        "2aa29c2fe6fe6279b31c3416e6de31ee4f80feb22745732d2439250ffa25d3d1",
+        "45b40ad4fd60cc6a93b214c58cb4992c7c7afcbf5bb6781648b08474685aa560"
+      ]
+    },
+    {
+      "original_path": "TagForge_2.0.0_progress.md",
+      "archived_path": "docs/archive/2.0.0/TagForge_2.0.0_progress.md",
+      "kind": "file",
+      "original_sha256": "1d73b74c14ad2f9b45dbc9389b0606e8dadea534194bba8452f1892a72e1460c",
+      "archived_sha256": "8e3be41d381655e03cdebd9d866cb7a8ab3110bf2a777ff91d5a5178b74a7446",
+      "previous_archived_sha256": [
+        "60869404756c32ec8b67185e6e621fce811eba29c299696be04ff72b8ad6a4e2",
+        "f3d0de886242f5af759a37c123ab7b6fd9ae91efcef55e4121a9075295cca73a"
+      ]
+    },
+    {
+      "original_path": "tests/validation/m1.json",
+      "archived_path": "docs/archive/validation/m1.json",
+      "kind": "file",
+      "original_sha256": "447ff84d6ffd07ad5090d7c831e8219a7556992ad1bcf0d7894004c1824289b3",
+      "archived_sha256": "ae5a0f05b0208e17be901d23bfaa5de161462a209144b7d52e9db0c7452f6be0",
+      "previous_archived_sha256": [
+        "447ff84d6ffd07ad5090d7c831e8219a7556992ad1bcf0d7894004c1824289b3"
+      ]
+    },
+    {
+      "original_path": "tests/validation/m2.json",
+      "archived_path": "docs/archive/validation/m2.json",
+      "kind": "file",
+      "original_sha256": "d990a4bb4d8ef3055d9aea78aa322ebfa011c8e172eb4fe4764f1b26d2ede9ff",
+      "archived_sha256": "a4f82efd46c5a7b94e1e7e3c090bd84f182ce2d69cec29e3b6fe5e85fa339841",
+      "previous_archived_sha256": [
+        "d990a4bb4d8ef3055d9aea78aa322ebfa011c8e172eb4fe4764f1b26d2ede9ff"
+      ]
+    },
+    {
+      "original_path": "tests/validation/m3.json",
+      "archived_path": "docs/archive/validation/m3.json",
+      "kind": "file",
+      "original_sha256": "66ea4aad4d08675ef15efa34ff6ef8f34179d2991092a943df3c1f8dc08a7cb7",
+      "archived_sha256": "b793f2673f613f668c8309f6d4edd5869e86cae56870dbeecf55e82e20337cab",
+      "previous_archived_sha256": [
+        "66ea4aad4d08675ef15efa34ff6ef8f34179d2991092a943df3c1f8dc08a7cb7"
+      ]
+    },
+    {
+      "original_path": "tests/validation/m4-preflight.json",
+      "archived_path": "docs/archive/validation/m4-preflight.json",
+      "kind": "file",
+      "original_sha256": "375b544180e194b91e337e5e27a660df81703390e85cd580b1af0de61ba6376a",
+      "archived_sha256": "ec9a190642fc4412496575f43f614f195f9983d10ae6188d1c45969e37769a43",
+      "previous_archived_sha256": [
+        "375b544180e194b91e337e5e27a660df81703390e85cd580b1af0de61ba6376a"
+      ]
+    },
+    {
+      "original_path": "tests/validation/m4-rc1.json",
+      "archived_path": "docs/archive/validation/m4-rc1.json",
+      "kind": "file",
+      "original_sha256": "a6a7081e15b4fef025a6cb12b8fc39cc680facd8daae61ac12bec6e96bb03c9a",
+      "archived_sha256": "3e909738ae081ba730980dd744fffdd45d5b703666395f9013c8eeb48d4b0be8",
+      "previous_archived_sha256": [
+        "1101107b0b631dd2113a2842806b656159b5b118c13721e19ec24533909940da"
+      ]
+    },
+    {
+      "original_path": "tests/validation/m4-rc2.json",
+      "archived_path": "docs/archive/validation/m4-rc2.json",
+      "kind": "file",
+      "original_sha256": "3e18ed2b76e2c62abb09febd85182ebce0e1aab5a192e841b6af0328dac62396",
+      "archived_sha256": "8db4abe10d6e399aacc78f518ab5419d1aff0531797ee37d21ca9ab1d782698b",
+      "previous_archived_sha256": [
+        "3e18ed2b76e2c62abb09febd85182ebce0e1aab5a192e841b6af0328dac62396"
+      ]
+    },
+    {
+      "original_path": "docs/commands.md",
+      "archived_path": "docs/archive/legacy/commands.md",
+      "kind": "file",
+      "original_sha256": "8b54734bec41968504f6a90999467f83dd67781443f1dfeb22d73517dfd205fc",
+      "archived_sha256": "8b54734bec41968504f6a90999467f83dd67781443f1dfeb22d73517dfd205fc"
+    },
+    {
+      "original_path": "docs/git.md",
+      "archived_path": "docs/archive/legacy/git.md",
+      "kind": "file",
+      "original_sha256": "179b1362c3f78ec6ae1491b2e38336a4501ed6d37eb19eb2d93dbcb7bf7007fb",
+      "archived_sha256": "179b1362c3f78ec6ae1491b2e38336a4501ed6d37eb19eb2d93dbcb7bf7007fb"
+    },
+    {
+      "original_path": "docs/journal.md",
+      "archived_path": "docs/archive/legacy/journal.md",
+      "kind": "file",
+      "original_sha256": "bb1900150bca96c1b83629691240af514088b5a521f0def39fbb6ce9a260ec17",
+      "archived_sha256": "bb1900150bca96c1b83629691240af514088b5a521f0def39fbb6ce9a260ec17"
+    },
+    {
+      "original_path": "docs/worklog",
+      "archived_path": "docs/archive/legacy/worklog",
+      "kind": "directory"
+    },
+    {
+      "original_path": "CHANGELOG.md",
+      "archived_path": "docs/archive/CHANGELOG.md",
+      "kind": "historical_sections",
+      "original_sha256": "5d6a9c25d676ab0fcd0db31eecdfbb013f5501042f85927472e92236e59b5a9a",
+      "original_sections_sha256": "e187dd74cb9adf9e9bc376fe86265ce709f5979cf22c2823208d47058c2f1c1d",
+      "archived_sha256": "f1debfe68e4e09074cdbb4c8bf346f32a689310a609182f4e6df602d70e9c8c8",
+      "previous_archived_sha256": [
+        "27ba23eb414bd14c8b1cd35b6df3bda65b3ce47a2934d1b0c822db95027cc662"
+      ]
+    }
+  ],
+  "scope": "Historical documents, stage records and experiment snapshots; live fixture data stays under tests/fixtures/pi_seq_dev.",
+  "path_convention": "JSON evidence paths are repository-root relative; Markdown links are relative to the containing document.",
+  "adjustments": "Markdown links and repository-root-relative JSON references were rebased; historical facts, dates and result snapshots are preserved.",
+  "layout_consolidation": {
+    "date": "2026-10-09",
+    "scope": "Root README only; remaining maintained Markdown moved into docs",
+    "records": [
+      {
+        "original_path": "CHANGELOG.md",
+        "current_path": "docs/CHANGELOG.md",
+        "original_sha256": "d275f82a7ced3d4f3c128a0a98c765ab4706eb8f80276fe32d2905516267d066",
+        "current_sha256": "0d6cb4c60270753dfd076a74938a8d4365287bd19cd989023df57775b7fc8dfb",
+        "previous_current_sha256": [
+          "bfd9a891eb7f581d9fda667c2b04e2e8a1d659760a1a135ec9a4ef0ef5ceb18e",
+          "ec4513034031914806e6a573518a5456789d1ee5c52405456a5d3eb971f4adb7",
+          "ef999145e4d1736e84bf4e8c063af27c2190554796fdce091f6b4c1b8ed86984",
+          "f66522d4ec603e7d61bb34714082d7015c32160ab4f55fd4efaba5d49e21f29f",
+          "0cb75e8b1ed88c8039b304fdc4ed03162ef8ad6a9f67ab745c11cc7a170cd777",
+          "418382b270256b6eacde5284357b0eb480dd9b572eac5251841a05c8bac8ea93",
+          "8f7202b6fa77ac23f9cf45445a2d226fc4d83442c28828316ceed7d5631d0aca"
+        ],
+        "latest_content_update": "Pipeline directory layout and result entry points; complete four-sample rerun audited on 2026-10-10"
+      },
+      {
+        "original_path": "MIGRATION.md",
+        "current_path": "docs/MIGRATION.md",
+        "original_sha256": "570c4165b1010e7875f02870c2e8d97d23f38a6d70c9b164a7f5c4c6550d3968",
+        "current_sha256": "4f79c180cf4ff794b30be5016050b4a499acd8c9d58381838fbf408dd2fe99e4",
+        "previous_current_sha256": [
+          "570c4165b1010e7875f02870c2e8d97d23f38a6d70c9b164a7f5c4c6550d3968",
+          "5b4492a12ebd048326865c077dd0f26a90e41f12b3dc3f292b1456718893801e",
+          "023c750ca03e1994d6e8d7742e227b297c67a28f82156b26db4d1723b8d60db6",
+          "1fb21328a0e8829abb804986d86acb047b580e4f3b9e7526a4fab78ad133e8f9",
+          "361fb0a037f173539b93d7c62b15a26ef02a49a5833fc8c4b4a5772c47fe1f33",
+          "8ab1ebc636ad78463b36b266f0a28d29c897c40affe01d4d852c794b59c9b0a0",
+          "e0355b5dfc8fbdb593b8e225e0334a8cb6c0b73efc75b0871df7e641fafec384"
+        ],
+        "latest_content_update": "Pipeline directory layout and result entry points; complete four-sample rerun audited on 2026-10-10"
+      },
+      {
+        "original_path": "RELEASE_NOTES.md",
+        "current_path": "docs/RELEASE_NOTES.md",
+        "original_sha256": "2f15d5295cc6e23824458bf876653a7f2dd460aaeff3ef82b770f30e2d374183",
+        "current_sha256": "e6877a0e632f6abbfab6d5f828f434c28f2cc399f00bb5cef57df68707076985",
+        "previous_current_sha256": [
+          "2f15d5295cc6e23824458bf876653a7f2dd460aaeff3ef82b770f30e2d374183",
+          "fff9f3ed7358024d36e8f541db89574635f03bc13b1cab91c29a46655b8d8fa9",
+          "ff4cd60d302e91cc5f633241791fe6ece09ec46c64e39b90885a9c65de747ed8",
+          "14f10ec6a7114322297fb50d671a5e83b8d9e333c6c8ecf68e6c9d901aa68518",
+          "bf695287ea7fd56977482a55ebd8cb0958fbb625e75129ad29234e14e8572ef3",
+          "c1f944cc0781e6d2dcc011cd29a41199396a65ce2e574c6bae2b5a8ca50ba63a",
+          "be3f76a23f56f9107bd9a6d985fcf5702b0b03fa2f24ec664434bbcd94062d49"
+        ],
+        "latest_content_update": "Pipeline directory layout and result entry points; complete four-sample rerun audited on 2026-10-10"
+      },
+      {
+        "original_path": "RELEASE_READINESS.md",
+        "current_path": "docs/RELEASE_READINESS.md",
+        "original_sha256": "93285acd0f8d19fc594c3bef076423187316db62f027eccf07661966922b77c7",
+        "current_sha256": "0330b20cce5e0721ef15a1310bc261280d828294a5792315354247b1cd8311f3",
+        "previous_current_sha256": [
+          "c06c75456721053d7638fb40772368541514a3ae056499db159a4ca2a6afcede",
+          "b4bde074c1f4e7d78a3aa02d2785e5e62fc207cbf6fe9542ae935c379b3f2762",
+          "a8ff0ff6b40bb4cc080b9e887d9a63055b5386755e0251fab41b2ec1df21d4f1",
+          "e02472cfbacceb0be4198ce03396cfa0bf64c31bf8420505e8ecbe777c7102a7",
+          "6b877bf413676770761c4b492986cfef78e99bf5f3c19660030b424ebb330533",
+          "28ce979e04dfce258a69a5a9c87269e47ed369423863178a861999385d89f3c5"
+        ],
+        "latest_content_update": "Pipeline directory layout and result entry points; complete four-sample rerun audited on 2026-10-10"
+      },
+      {
+        "original_path": "examples/tutorial.md",
+        "current_path": "docs/tutorial.md",
+        "original_sha256": "5447743148a988ca5bb2b113b50d9675aa0641b3bccd5ca65b6fb8e7a283efd1",
+        "current_sha256": "9425ae94e29dc6d15d4600e86f90cb4a52cb2b704e55e0f0615be83715c50ca9"
+      },
+      {
+        "original_path": "tests/validation/README.md",
+        "current_path": "docs/validation.md",
+        "original_sha256": "8acf2a452b6dfc2012b30f0e38789979e03805efe4d133410f45cbee1ae5655e",
+        "current_sha256": "77a204d5844fe4ca7b7aa0e733435853780867697dc6621e208848c93c4762cb",
+        "previous_current_sha256": [
+          "88f18f64180c7b344b4450a81bcbe83bc7ecabfdd76da3f34c3c0ae0673b9317",
+          "9164d316fc9f38bbe134af6382e91cb074fac47d5a73a87a6754ecb86073a919",
+          "5b2aab48cb47c8faef48eb191743256654a43a51179de15b50f4ce2a38d6e573",
+          "e97b98a516a3b6da3002e14cea1e8f2e4c4d7782a2356a25333453150733f0c4",
+          "e9d4dc96fadf1b22f2c933c46058aa3d8b0822dc3e430743971c2cd5ccf0fecc",
+          "984951574b6297b2eeb5f7e10d9b09017f046e9b99fbd34c9e3a4be4cc13d49d",
+          "b47a5804f6ca1a1a1f3d0261b6769550ef32ac2877fb8eeaf4feed43b09d2d2d",
+          "dd9d8e023989bc0357743d6956937438af0d174b8c6a54b649f3441f64fd8c63",
+          "585e73d6882309eaaf171ff0ceaa0abcb7fe61d064c4269b47eb2caf4a86b50c"
+        ],
+        "latest_content_update": "Pipeline directory layout and result entry points; complete four-sample rerun audited on 2026-10-10"
+      },
+      {
+        "original_path": "tests/fixtures/pi_seq_dev/README.md",
+        "current_path": "docs/pi_seq_dev.md",
+        "original_sha256": "24f6aae5c64115ad8a565ea4597acd53956494fb5df190d1416ee34eb481352e",
+        "current_sha256": "c9b66132a6f7f43e89fb034400128ba7c2b28143dd916c1d82baa80565a63d63",
+        "previous_current_sha256": [
+          "e96dcce3279125a6f2cde6f376bb95ad70712f2fc8e832d602bf4a737ddc8fd7",
+          "08668ad908d5d795b87370ddde1d122dda2e342d56fa8ead3bc924f53efba5af",
+          "3f6dae112671e903d0337a5b168426c18773f60a20da9ca851d0d4ef64946d4b",
+          "e5584f0dade095ab193ca9fb01a1bd60f2b060e58494bf0a1002768c4616fda1",
+          "ef15c8f5066e2c8f43d45aac5e178d1af23593d3e65d232f3678555c05051dca",
+          "7218bb8f90568a3433677f74bcf9f71cf7ba93ad169ed0c6e38be6bcf777eb32",
+          "06c0241aad82407450fbacb4cff803e1098aa0c47d82ed07d23fa44886eb68f9"
+        ],
+        "latest_content_update": "Pipeline directory layout and result entry points; complete four-sample rerun audited on 2026-10-10"
+      }
+    ]
+  },
+  "test_archive_cleanup": {
+    "date": "2026-10-10",
+    "original_path": "tests/validation/02_output",
+    "archived_path": "docs/archive/testing",
+    "record": "docs/archive/validation/testing-cleanup-20261010.json",
+    "embedded_historical_paths_preserved": true
+  }
+}

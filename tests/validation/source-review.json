@@ -1,0 +1,53 @@
+{
+  "status": "reviewed",
+  "baseline_git_head": "230528e473ebb021d04d668eb06051a217d70227",
+  "initial_dirty_modules": [
+    "src/tagforge/cli.py",
+    "src/tagforge/downsample.py",
+    "src/tagforge/io_utils.py",
+    "src/tagforge/pipeline.py",
+    "src/tagforge/reports.py"
+  ],
+  "initial_inventory": "docs/archive/testing/m4-20261009/initial-dirty-inventory.json",
+  "initial_diff": "docs/archive/testing/m4-20261009/initial-dirty.patch",
+  "baseline_normalized_config": "docs/archive/testing/m4-20261009/baseline-normalized-config.json",
+  "final_source_sha256": {
+    "src/tagforge/__init__.py": "052ef09db75f95efba44298249d8330e5b8f99aa67b16f2e3f445f087cd1b89f",
+    "src/tagforge/__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+    "src/tagforge/barcode_correct.py": "79d1ae3475aa58b36b93374649d87f666ecb27c6e5e9b500565546970616ce17",
+    "src/tagforge/checkpoint.py": "f369c60c1b6f172453dd939231c60a3e88aacd8b5b44c77da82d89572f246f64",
+    "src/tagforge/cli.py": "e055c04bc3488fc9bb4e965662514347db52e256c3839b4c9bb9211cbefdc8d4",
+    "src/tagforge/columnar.py": "66f15ed4e6ff889b3918e5d2d34beaedded9b6ad376b825c286757ffbfa7b52a",
+    "src/tagforge/config.py": "c33e10dedf1ff79796c136ad7f87a37e26fb9362ee2af4ed361318b0838ca849",
+    "src/tagforge/downsample.py": "0585a22ff8bc05b275dadb7d60847b61f6a3cefba63a841ebbac67b9e18e4e7f",
+    "src/tagforge/example_data.py": "35afb7f5452ef4b19e8d292d2ff2219b1b151860087cb4f094442baac797b47c",
+    "src/tagforge/external_tools.py": "fe40ffd5c2f190b36399288ac015facf490f30f412f6d71456cae706b8de95fc",
+    "src/tagforge/extract.py": "14128f837cd0d51d39059f3a653192040320d91c2517f6a08d43592ec1ee65df",
+    "src/tagforge/fastq.py": "f9e1b01ed806b9b25430c97316125c2e85af689cd337abb7a19dda3b3882771b",
+    "src/tagforge/io_utils.py": "cc6a80a91b4c88978966a63769fcf2873a59bf0eba504e5e672f581b8c0020ab",
+    "src/tagforge/logging_utils.py": "0dfb1118a80ef39ac46e2df1ba4441207b358db1585a4975aeb2146250ebb8c4",
+    "src/tagforge/matrix.py": "dd1fa6041e5ca408744b58fd57110c60cd4f82c16ca099a86bd0cd71c9fc4916",
+    "src/tagforge/pi_seq.py": "b3fe4db24b5385bd1f33c87cb9427950a63acfc4f0d6aecddd09ce080530e7d1",
+    "src/tagforge/pipeline.py": "2d2d59ee83dd7133d4bfd0a427b223be033d817eace92eb4d235ada98d18eaa9",
+    "src/tagforge/quick_test.py": "165af52580305770f102fb2561d13c1a7c71d9408bf8aba6db636ba3f28be0bc",
+    "src/tagforge/reports.py": "829afbc0c580e724bb628878065b4964e1f2ee6addcb95d209f6ac15d04b64e6",
+    "src/tagforge/selected.py": "d95813453ee35e88e89fb5267f67ab0e48f70a5c4cc999b6d19063498628596f",
+    "src/tagforge/simple_yaml.py": "c171b1b85971c8d08851d5565447dca26a78a537e9b34bc477c4b6674d528c34",
+    "src/tagforge/slurm.py": "c7603f59578f3f26609ff807777d7b9214b912327e49f277479bf811ff497401",
+    "src/tagforge/sparse_matrix.py": "326e6cf70ded68307392421d820fed182e1c5725cfd6804512db746f1abad975",
+    "src/tagforge/umi_correct.py": "4916ffa0732531558517fde917ed6d2df32a5ebc566718bce4c9099ee35555a3",
+    "src/tagforge/xlsx.py": "cbafa942fb2df7f9db15e9707af30a53e76801744629492395ad4fe6933f9a6b"
+  },
+  "review_record": "docs/RELEASE_READINESS.md",
+  "findings_resolved": [
+    "Checkpoint/selected consistency and shared complete-read QC",
+    "Stable integer data and strict configuration semantics",
+    "PB-CB shared-UMI merging, equal-support alias prevention and reports",
+    "Repeat-mean analysis, expected counts and metric unit consistency",
+    "Conservative streaming/resource changes and installed CLI contracts",
+    "Integration test isolation and development metadata synchronization",
+    "Matrix export rejects stale configuration/upstream generations and preserves existing export until recomputation"
+  ],
+  "version": "2.0.0",
+  "source_snapshot": "docs/archive/testing/m4-20261009/release-source-r3"
+}

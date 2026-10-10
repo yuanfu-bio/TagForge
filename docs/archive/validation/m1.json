@@ -1,0 +1,148 @@
+{
+  "date": "2026-10-09",
+  "milestone": "M1",
+  "development_version": "0.1.14",
+  "baseline": {
+    "source_root": "/data/project/yanhuixu/yfu/TagForge",
+    "git_head": "230528e473ebb021d04d668eb06051a217d70227",
+    "source_sha256": {
+      "src/tagforge/__init__.py": "37bf393bea6b629efd1f86ea53c41c0db37dccf73806ad7e4bee8fa60c91f937",
+      "src/tagforge/__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+      "src/tagforge/barcode_correct.py": "424f07fe7989794a1cee46b1c99253a5b518fd399f637799d7950c4dae931150",
+      "src/tagforge/cli.py": "26871c0788bf3059344f9ed630410dc7bed4ec7cc381b67896cc43fb8754ff01",
+      "src/tagforge/columnar.py": "c955f7ae0e507462eea2e6b31b15b2412dab27381094d2777d54f3997b805303",
+      "src/tagforge/config.py": "3c1670b270cdda59d5c9bebf7b1d58c5a91c201b0c423c548697bad4f47c8400",
+      "src/tagforge/downsample.py": "f031c064a0a8c2dbd163dd07c5c64536f3ceb5dd76ce5b7340d4d60c38da91aa",
+      "src/tagforge/external_tools.py": "fe40ffd5c2f190b36399288ac015facf490f30f412f6d71456cae706b8de95fc",
+      "src/tagforge/extract.py": "089e5d82be80a9c81cf9f95a2ee92598a89587de6459b6be3655fc58798a51d9",
+      "src/tagforge/fastq.py": "f9e1b01ed806b9b25430c97316125c2e85af689cd337abb7a19dda3b3882771b",
+      "src/tagforge/io_utils.py": "cc6a80a91b4c88978966a63769fcf2873a59bf0eba504e5e672f581b8c0020ab",
+      "src/tagforge/logging_utils.py": "0dfb1118a80ef39ac46e2df1ba4441207b358db1585a4975aeb2146250ebb8c4",
+      "src/tagforge/matrix.py": "ed4fa785ba8ba7d0a30da54e9eb596c3391e48441d9608fabeb0b4c5b488c90f",
+      "src/tagforge/pi_seq.py": "491abddc1c7139305c1320eca358fa041f405d859453c5e6f58f918d6df2e937",
+      "src/tagforge/pipeline.py": "fc7298eff853ceb603be97045ec362898e7a6c5aaa414d6f54c64287acb1fc93",
+      "src/tagforge/quick_test.py": "7d41dad75284ba7a65990332a1ae3f47b35dce0cc439c9504123ddb1253a779a",
+      "src/tagforge/reports.py": "a090e9153a86cf81c1ac0e8d07028d1daebe8f2335fcfbed3ebbab6527aacb2c",
+      "src/tagforge/simple_yaml.py": "c171b1b85971c8d08851d5565447dca26a78a537e9b34bc477c4b6674d528c34",
+      "src/tagforge/slurm.py": "c7603f59578f3f26609ff807777d7b9214b912327e49f277479bf811ff497401",
+      "src/tagforge/sparse_matrix.py": "d27c6e47071b5cbb7a8b2bd1c7146b25dd850310787ced45b8ef63a5c671901a",
+      "src/tagforge/umi_correct.py": "bdccfcdb503bd859b96469c827cddea8b96ef0cfa41b63ec7dfa1a1b357f272a",
+      "src/tagforge/xlsx.py": "dac06f4ef6bc0499132a4d56a6700af61d727e5e335834e985bfbaf87fb7c7ce"
+    },
+    "code_tree_sha256": "8cee7ebbcd5619926685031d309051b683fabfb666ed2c6a0ef9dd0b2fff31ad"
+  },
+  "validation_source_sha256": {
+    "src/tagforge/__init__.py": "f3c87951756217e28b648d8333dc3d949e1195d775bfd943c5e7d0ff8276d070",
+    "src/tagforge/__main__.py": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d",
+    "src/tagforge/barcode_correct.py": "b84c7b77b1fcc840e4884ae08e1a8be8c5d96d83d28220738a25a12e07741057",
+    "src/tagforge/checkpoint.py": "d1b2925b221842c592efb339f6f4b1350ec394d65929d83ba74cdade8af6d313",
+    "src/tagforge/cli.py": "26871c0788bf3059344f9ed630410dc7bed4ec7cc381b67896cc43fb8754ff01",
+    "src/tagforge/columnar.py": "9a62207527aa0637c77d1306e4d9837e2735179ddcf2bf783a9e1161b5b358c3",
+    "src/tagforge/config.py": "3c1670b270cdda59d5c9bebf7b1d58c5a91c201b0c423c548697bad4f47c8400",
+    "src/tagforge/downsample.py": "61b927b7c2d5461edc635572e70c9a380ca5e72cf5e3140409a8974e00ddb06c",
+    "src/tagforge/external_tools.py": "fe40ffd5c2f190b36399288ac015facf490f30f412f6d71456cae706b8de95fc",
+    "src/tagforge/extract.py": "b644207e65330e48043dadfb12cf41fa1f787168f7af0b5059e33cc0ae5a258b",
+    "src/tagforge/fastq.py": "f9e1b01ed806b9b25430c97316125c2e85af689cd337abb7a19dda3b3882771b",
+    "src/tagforge/io_utils.py": "cc6a80a91b4c88978966a63769fcf2873a59bf0eba504e5e672f581b8c0020ab",
+    "src/tagforge/logging_utils.py": "0dfb1118a80ef39ac46e2df1ba4441207b358db1585a4975aeb2146250ebb8c4",
+    "src/tagforge/matrix.py": "ed4fa785ba8ba7d0a30da54e9eb596c3391e48441d9608fabeb0b4c5b488c90f",
+    "src/tagforge/pi_seq.py": "491abddc1c7139305c1320eca358fa041f405d859453c5e6f58f918d6df2e937",
+    "src/tagforge/pipeline.py": "9fb4693775476adc327e3a584e6899380ae2e8e9effaa398466286d2205431fd",
+    "src/tagforge/quick_test.py": "7d41dad75284ba7a65990332a1ae3f47b35dce0cc439c9504123ddb1253a779a",
+    "src/tagforge/reports.py": "e21df7d60d94613090cb7293ede80069228aaba008faf961322b818e1ffebdf9",
+    "src/tagforge/selected.py": "0f389bc63f42c0a6fa21bc52910e8940a5aed046d497b73c0762d8a85a597167",
+    "src/tagforge/simple_yaml.py": "c171b1b85971c8d08851d5565447dca26a78a537e9b34bc477c4b6674d528c34",
+    "src/tagforge/slurm.py": "c7603f59578f3f26609ff807777d7b9214b912327e49f277479bf811ff497401",
+    "src/tagforge/sparse_matrix.py": "d27c6e47071b5cbb7a8b2bd1c7146b25dd850310787ced45b8ef63a5c671901a",
+    "src/tagforge/umi_correct.py": "bdccfcdb503bd859b96469c827cddea8b96ef0cfa41b63ec7dfa1a1b357f272a",
+    "src/tagforge/xlsx.py": "dac06f4ef6bc0499132a4d56a6700af61d727e5e335834e985bfbaf87fb7c7ce"
+  },
+  "runtime": {
+    "python": "3.11.15",
+    "pyarrow": "25.0.0",
+    "duckdb": "1.5.5",
+    "cutadapt": "5.2",
+    "umi-tools": "1.1.6"
+  },
+  "tests": {
+    "command": "python -m unittest discover -s tests -v",
+    "count": 42,
+    "result": "OK",
+    "elapsed_seconds": 14.741,
+    "isolated_checkout": true
+  },
+  "fixture_config_sha256": "2c467c2d8e35dcc481e5ddfe6eb9ef76dabc09370aa2c89603a63e30b3f9546b",
+  "real_pipeline": {
+    "command": "python -m tagforge run --config tests/fixtures/pi_seq_dev/00_config/config.yaml --skip-quick-test",
+    "paired_records": 200000,
+    "exit_code": 0,
+    "wall_seconds": 189.87,
+    "peak_rss_kib": 850456,
+    "results": [
+      {
+        "sample": "100-1-N1",
+        "total_reads": 50000,
+        "valid_reads": 47281,
+        "molecules": 46423,
+        "retained_molecules": 46413,
+        "barcodes": 46037,
+        "features": 102,
+        "baseline_counts_identical": true
+      },
+      {
+        "sample": "100-2-SLE1",
+        "total_reads": 50000,
+        "valid_reads": 47231,
+        "molecules": 46198,
+        "retained_molecules": 46184,
+        "barcodes": 45577,
+        "features": 102,
+        "baseline_counts_identical": true
+      },
+      {
+        "sample": "100-3-SLE2",
+        "total_reads": 50000,
+        "valid_reads": 47604,
+        "molecules": 46430,
+        "retained_molecules": 46422,
+        "barcodes": 45731,
+        "features": 103,
+        "baseline_counts_identical": true
+      },
+      {
+        "sample": "100-5-N2",
+        "total_reads": 50000,
+        "valid_reads": 47425,
+        "molecules": 46454,
+        "retained_molecules": 46450,
+        "barcodes": 45866,
+        "features": 102,
+        "baseline_counts_identical": true
+      }
+    ]
+  },
+  "comparison": {
+    "parquet": "compare all sorted logical rows in molecule_detail, rmMP and raw_molecule_pairs",
+    "text": "byte-equal correction stats, PI QC, matrix summary, downsample metrics and selection point"
+  },
+  "rerun": {
+    "completed_stages": 24,
+    "all_generations_unchanged": true
+  },
+  "limits": [
+    "PI-seq subsets only; two random subsets and two prefix subsets",
+    "No algorithm-accuracy or million-read performance claim",
+    "Process-interruption recovery tested; no power-loss durability claim",
+    "Parquet footer/schema/fragment metadata validated without hashing all data pages"
+  ],
+  "storage": {
+    "archive_root": "docs/archive/testing/m1-20261009",
+    "baseline_snapshot": "docs/archive/testing/m1-20261009/baseline",
+    "validation_snapshot": "docs/archive/testing/m1-20261009/validation",
+    "fixture_output": "tests/fixtures/pi_seq_dev/02_output",
+    "fixture_report": "tests/fixtures/pi_seq_dev/00_report",
+    "archive_manifest": "docs/archive/testing/m1-20261009/archive-manifest.json",
+    "verified_by": "SHA256 of every archived file compared to its /tmp source; fixture output/report copies compared to archive",
+    "archived_files": 552
+  }
+}
