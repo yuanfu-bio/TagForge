@@ -109,17 +109,78 @@ segments and UMIs, determinable feature identities, and whitelists wherever
 whitelist correction is enabled. Validate each layout and dataset before use.
 The shared count engine does not imply validated support for every named assay.
 
-PI-seq multi-PB filtering and PB–CB mapping are dedicated experimental extensions.
-PI-seq compares PB read support within `(feature, corrected UMI)` and, for multi-PB
-groups, keeps a winner only above the configured dominance threshold. PB–CB
-mapping selects a dominant CB for each PB using read support after the configured
-observed-CB handling. These rules sit on top of the common processing core.
+## Two dedicated libraries for PI-seq experiments
+
+[Page 3](../figures/TagForge_core_principle.en.page-3.png) compares these extensions.
+Both reuse the common core and apply experiment-specific assignment rules after
+UMI clustering. PB is the identity barcode shared by the two libraries, FB is an
+antibody feature barcode, and CB is a cell barcode.
+
+| Library | Question | Assignment scope | Main result |
+| --- | --- | --- | --- |
+| PI-seq | Which PB carries this antibody-tagged molecule? | Compare PBs within `(FB_name, corrected_umi)` | Filtered PB × FB molecule details and counts. |
+| PB–CB | Which cell barcode is supported by this PB? | Compare CB read support for each PB | PB → CB assignments and PB counts per cell. |
+
+### PI-seq: resolve molecular PB identity
+
+The development fixture has five 8-nt PB segments in R1, corrected individually
+and concatenated, and `U1 (8 nt)–FB (12 nt)–U2 (8 nt)` in R2. UMI segments are
+concatenated in configured order. Linker localization and fixed-position fallback
+reuse the common core; the layout is configurable rather than universal.
+
+After UMI clustering within `PB × FB_name`, the filter groups records by
+`(FB_name, corrected_umi)` across PBs. Single-PB groups are retained directly.
+For multi-PB groups, it keeps the highest-read PB only when its fraction of the
+group's supporting reads is **strictly greater than**
+`pi_seq.dominance_threshold` (default 0.8); otherwise the entire group is excluded.
+Thus 9:1 support retains the 90% PB, while 8:2 support fails the default threshold.
+Equal-read candidates are ordered by PB sequence before threshold evaluation.
+Read support determines assignment; retained UMI molecules determine final counts.
+
+The main output is `03_molecules/{sample}.molecule_detail.rmMP.parquet`, used for
+PI-seq counts and downstream per-PB analysis. `pi_seq_qc.tsv` records multi-PB,
+dominant-assignment and removal metrics.
+
+### PB–CB: map PBs to cells
+
+This library reads `PB × CB × UMI`. CB is retained as observed sequence:
+`barcode2.sequence_only: true`, CB whitelist correction disabled, and no CB
+whitelist. PB segments may still use configured whitelist correction.
+
+Optional conservative observed-CB correction is enabled by default. Across the
+sample, candidate parent CBs contain no N and have at least 5 supporting reads.
+A child at Hamming distance 1, or with one matching N, is aliased only when it has
+a unique qualifying parent with strictly higher read support and at least 10 times
+its support. Ambiguous or ineligible sequences are not forcibly merged. These
+settings are configurable under `pb_cb`.
+
+After alias handling, records with the same `(PB, CB, corrected_umi)` are combined
+again to prevent duplicate molecule counting after CB merging. For each PB,
+TagForge aggregates molecule counts and supporting reads by CB. The leading CB's
+**read support fraction** must be **strictly greater than**
+`pb_cb.dominance_threshold` (default 0.8). Equal-read candidates are ordered by CB
+sequence before threshold evaluation. At the default threshold, 9:1 support is
+assigned and 8:2 support is unassigned.
+
+Outputs in `04_matrix/` include raw pair support (`pb_cb_mapping.tsv.gz`), retained
+assignments with molecule/read counts and dominance fractions (`pb_cb_map.tsv.gz`),
+PB counts per CB and their distribution (`cb_pb_counts.tsv.gz`,
+`cb_pb_count_distribution.tsv`), and CB aliases (`cb_observed_correction.tsv.gz`).
+
+### Link the outputs through shared PBs
+
+PI-seq supplies `PB × antibody feature` molecular evidence, while PB–CB supplies
+`PB → cell` assignments. Outputs can be joined on shared PBs with consistent
+identity definitions as input to cell-level feature integration. The join and
+biological interpretation are separate downstream analyses. Multiple PBs may map
+to the same CB; each retained PB has one CB assignment.
 
 ## Implementation references
 
 - [Structure and configuration](../src/tagforge/config.py)
 - [Extraction](../src/tagforge/extract.py) and [barcode correction](../src/tagforge/barcode_correct.py)
 - [UMI clustering and aggregation](../src/tagforge/umi_correct.py)
+- [PI-seq assignment filtering](../src/tagforge/pi_seq.py) and [PB–CB mapping](../src/tagforge/matrix.py)
 - [Sparse counts](../src/tagforge/sparse_matrix.py) and [downsampling](../src/tagforge/downsample.py)
 - [Checkpoints and dependency validation](../src/tagforge/checkpoint.py)
 - [Slurm integration](../src/tagforge/slurm.py)

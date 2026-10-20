@@ -66,13 +66,45 @@ TagForge 将已知设计的条码测序数据转化为分子证据与计数。�
 
 扩展应用要求输入为流程支持的双端 reads，片段和 UMI 可提取，特征身份可确定，且开启白名单校正的片段具备相应白名单。各文库均需结构配置和数据验证；通用计数模型不等于已经验证所有实验平台或完整下游流程。
 
-PI-seq 多 PB 过滤与 PB–CB 映射是基于共同核心的实验定制扩展。PI-seq 在 `(特征, 校正 UMI)` 内比较各 PB 的 read 支持，多 PB 时仅在优势比例严格超过阈值时保留；PB–CB 在配置的观测 CB 处理后，按 read 支持为每个 PB 选择优势 CB。
+## PI-seq 实验的两类定制文库
+
+[第三页示意图](../figures/TagForge_core_principle.zh-CN.page-3.png)并列展示两类文库。它们复用通用核心，在 UMI 聚类后执行各自的归属规则。PB 是两类文库共享的身份条码；FB 是抗体特征条码；CB 是细胞条码。
+
+| 文库 | 需要解决的问题 | 判定范围 | 主要结果 |
+| --- | --- | --- | --- |
+| PI-seq | 一条抗体标签分子归属于哪个 PB？ | 在同一 `(FB_name, corrected_umi)` 内比较各 PB | 过滤后的 PB × FB 分子明细与计数。 |
+| PB–CB | 一个 PB 归属于哪个细胞 CB？ | 对每个 PB 汇总各 CB 的 read 支持 | PB → CB 映射、每个 CB 的 PB 数及分布。 |
+
+### PI-seq：保留有明确 PB 归属的分子
+
+开发示例中，R1 的五段 PB 各为 8 nt，经逐片段白名单校正后拼接；R2 为 `U1 (8 nt)–FB (12 nt)–U2 (8 nt)`，UMI 按配置顺序拼接。Linker 定位和固定位置回退复用通用流程。该布局是示例，具体实验可配置。
+
+先在 `PB × FB_name` 内完成 UMI 聚类，再按 `(FB_name, corrected_umi)` 检查跨 PB 的归属。仅出现一个 PB 的组直接保留；出现多个 PB 时，保留支持 reads 最多的 PB，前提是其支持比例 **严格大于** `pi_seq.dominance_threshold`（默认 0.8），否则排除该整组。比例为该 PB 的支持 reads 除以组内所有 PB 的支持 reads。
+
+例如 9:1 的 read 支持保留占 90% 的 PB；8:2 的支持恰好为 80%，默认排除。最高 read 支持并列时，程序按 PB 字典序选择候选，再检查阈值。过滤依据是 read 支持，最终计数仍以保留的 UMI 分子为单位。
+
+主要分子结果为 `03_molecules/{sample}.molecule_detail.rmMP.parquet`，供 PI-seq 计数与下游逐 PB 分析使用；多 PB、优势归属和移除比例记录于 `pi_seq_qc.tsv`。
+
+### PB–CB：建立 PB 到细胞的映射
+
+该文库读取 `PB × CB × UMI`。CB 以实测序列保留，要求 `barcode2.sequence_only: true`、关闭其白名单校正且不配置 CB 白名单；PB 片段仍可按配置使用白名单校正。
+
+默认启用可关闭的观测 CB 保守纠错：全样本中仅使用不含 N、至少 5 条 reads 的候选母序列；低支持 CB 与其相差 1 bp，或仅含 1 个可匹配的 N，且母序列支持严格更多、至少为子序列的 10 倍时，只有唯一符合条件的母序列才建立别名。多候选或不符合条件的序列不强制归并。参数由 `pb_cb` 配置。
+
+CB 别名处理后，相同 `(PB, CB, corrected_umi)` 的分子记录重新合并，避免 CB 归并后重复计数。对每个 PB 按 CB 汇总分子数与支持 reads，用 **read 支持比例** 选择优势 CB，比例必须 **严格大于** `pb_cb.dominance_threshold`（默认 0.8）。最高 read 支持并列时先按 CB 字典序选择候选，再检查阈值。默认配置下，9:1 保留映射，8:2 不分配 CB。
+
+主要输出在 `04_matrix/`：`pb_cb_mapping.tsv.gz` 保留原始 PB–CB 配对支持；`pb_cb_map.tsv.gz` 保存通过阈值的映射及分子数、read 支持和优势比例；`cb_pb_counts.tsv.gz` 与 `cb_pb_count_distribution.tsv` 描述细胞的 PB 数；`cb_observed_correction.tsv.gz` 记录 CB 别名。
+
+### 通过共享 PB 连接两类结果
+
+PI-seq 提供 `PB × 抗体特征` 的分子证据，PB–CB 提供 `PB → 细胞` 的映射。两类输出可按共享且定义一致的 PB 关联，作为细胞层面抗体特征整合的输入；关联和下游解释另行完成。多个 PB 可以映射到同一 CB，每个通过筛选的 PB 仅保留一个 CB 归属。
 
 ## 实现依据
 
 - [结构配置](../src/tagforge/config.py)
 - [片段提取](../src/tagforge/extract.py)与[条码校正](../src/tagforge/barcode_correct.py)
 - [UMI 聚类与聚合](../src/tagforge/umi_correct.py)
+- [PI-seq 归属过滤](../src/tagforge/pi_seq.py)与[PB–CB 映射](../src/tagforge/matrix.py)
 - [稀疏计数](../src/tagforge/sparse_matrix.py)与[降采样](../src/tagforge/downsample.py)
 - [检查点与依赖校验](../src/tagforge/checkpoint.py)
 - [Slurm 集成](../src/tagforge/slurm.py)

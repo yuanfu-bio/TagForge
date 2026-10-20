@@ -27,8 +27,15 @@ built on the same core.
 
 </details>
 
+<details>
+<summary>Dedicated PI-seq and PB–CB libraries — third page</summary>
+
+![PI-seq molecule assignment, PB–CB cell mapping and linkage through shared PBs](figures/TagForge_core_principle.en.page-3.png)
+
+</details>
+
 [Method details](docs/method-overview.md) ·
-[Two-page PDF](figures/TagForge_core_principle.en.pdf) ·
+[Three-page PDF](figures/TagForge_core_principle.en.pdf) ·
 [HTML — download and open locally](figures/TagForge_core_principle.en.html)
 
 **Potential extensions:** Sample Tags, CRISPR Guide Capture, Antigen Capture,

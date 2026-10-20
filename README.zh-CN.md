@@ -21,8 +21,15 @@ TagForge 是面向条码编码实验的命令行分析框架，以 **身份条�
 
 </details>
 
+<details>
+<summary>展开第三页：PI-seq 与 PB–CB 定制文库</summary>
+
+![PI-seq 分子归属、PB–CB 细胞映射及共享 PB 连接两类结果](figures/TagForge_core_principle.zh-CN.page-3.png)
+
+</details>
+
 [原理与适用范围](docs/method-overview.zh-CN.md) ·
-[两页 PDF](figures/TagForge_core_principle.zh-CN.pdf) ·
+[三页 PDF](figures/TagForge_core_principle.zh-CN.pdf) ·
 [HTML（下载后在浏览器中打开）](figures/TagForge_core_principle.zh-CN.html)
 
 **可扩展方向：** Sample Tags、CRISPR Guide Capture、Antigen Capture，以及启动子／报告基因条码文库，在片段结构和特征身份可直接解析的前提下，具备使用同一模型的适配基础。各类文库均需配置与数据验证，具体适配条件和下游分析范围见原理说明。
