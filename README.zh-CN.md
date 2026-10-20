@@ -2,9 +2,30 @@
 
 [English](README.md) | 简体中文
 
-**从双端 FASTQ 到校正后的条码计数与可直接用于分析的报告。**
+**从复杂条码测序数据到可追踪的分子证据与定量结果。**
 
-TagForge 是面向抗体–寡核苷酸条码文库的命令行分析工具，将条码提取、白名单校正、UMI 去重、饱和度分析和报告生成整合为一套可配置的流程，支持标准条码–特征文库、PI-seq 和 PB–CB 文库。
+TagForge 是面向条码编码实验的命令行分析框架，以 **身份条码 × 特征条码 × UMI** 为通用模型，完成双端 reads 的片段解析、逐片段白名单校正、UMI 聚类和分子计数。身份条码用于区分细胞、样本或其他实验单元，特征条码用于识别检测标签。
+
+抗体标签与组合条码文库是主要应用。PI-seq 多 PB 过滤和 PB–CB 映射是建立在通用核心之上的实验定制扩展。
+
+## 工作原理
+
+**结构解析 → 逐片段条码校正 → UMI 聚类 → 分子明细、稀疏计数与诊断。**
+
+![TagForge 通用流程：文库解析、片段校正、UMI 分子计数、输出、诊断与应用场景](figures/TagForge_core_principle.zh-CN.page-1.png)
+
+<details>
+<summary>展开第二页：关键判定与工程化优势</summary>
+
+![TagForge 条码校正决策、UMI 聚类对照示例及工程化优势](figures/TagForge_core_principle.zh-CN.page-2.png)
+
+</details>
+
+[原理与适用范围](docs/method-overview.zh-CN.md) ·
+[两页 PDF](figures/TagForge_core_principle.zh-CN.pdf) ·
+[HTML（下载后在浏览器中打开）](figures/TagForge_core_principle.zh-CN.html)
+
+**可扩展方向：** Sample Tags、CRISPR Guide Capture、Antigen Capture，以及启动子／报告基因条码文库，在片段结构和特征身份可直接解析的前提下，具备使用同一模型的适配基础。各类文库均需配置与数据验证，具体适配条件和下游分析范围见原理说明。
 
 ## 为什么选择 TagForge？
 
@@ -72,7 +93,7 @@ my-project/
 | ------------------------------------------- | ------------------------------------------------------- |
 | `project`                                 | 项目名称、工作目录和输出目录。                          |
 | `samples`                                 | 按统一 FASTQ 目录结构自动发现样本，或显式指定样本路径。 |
-| `barcode1`                                | 主条码片段及其白名单，如 CELL 或 PB。                   |
+| `barcode1`                                | 身份条码片段及其白名单，如 CELL 或 PB。                   |
 | `barcode2`                                | 特征条码片段，或 PB–CB 文库中直接观测到的 CB 序列。    |
 | `umi`                                     | UMI 片段，按需要拼接的顺序定义。                        |
 | `barcode2_annotation`                     | 特征条码的 ID、序列和抗体名称。                         |
@@ -111,7 +132,7 @@ tagforge run --config my-project/00_config/config.yaml --sample sample-A
     ├── 02_corrected/         # 有效 reads 与条码校正质控
     ├── 03_molecules/         # 去重后的分子与 PI 过滤结果
     ├── 04_matrix/            # 稀疏计数或 PB–CB 映射
-    ├── 05_downsample/        # 饱和度曲线与重复抽样统计
+    ├── 05_downsample/        # 饱和度曲线与抽样诊断
     └── 06_report/            # 样本 HTML 与 Excel 报告
 ```
 
@@ -125,7 +146,7 @@ tagforge run --config my-project/00_config/config.yaml --sample sample-A
 
 Parquet 输出可能是单个文件，也可能是包含多个分片的目录；读取时应将所有分片视为同一张表。标准文库与 PI-seq 的矩阵计数均来自校正、去重后的 UMI，PI-seq 还会执行 PI 过滤。
 
-降采样通过对全深度校正分子组内的支持 reads 进行抽样，生成可复现的诊断曲线和重复抽样统计。报告分别展示 read 层面的测序饱和度与非单例分子比例（由多条 reads 支持的分子占比）。所选抽样比例基于后者在多次重复中的均值，用于辅助评估文库；主要分析使用全深度结果，抽样比例选择本身不构成测序深度建议。
+降采样在全深度校正分子组内对支持 reads 按比例各抽样一次，生成可复现的诊断曲线。报告分别展示 read 层面的测序饱和度与非单例分子比例（由多条 reads 支持的分子占比）。所选抽样比例使观测到的非单例分子比例最大，用于辅助评估文库；主要分析使用全深度结果，抽样比例选择本身不构成测序深度建议。
 
 ## 常用命令
 
@@ -158,6 +179,7 @@ sbatch slurm_jobs/tagforge_array.slurm
 
 ## 文档
 
+- [核心原理与适用范围](docs/method-overview.zh-CN.md)
 - [示例教程](docs/tutorial.md)
 - [2.0.0 发布说明](docs/RELEASE_NOTES.md)
 - [升级到 2.0](docs/MIGRATION.md) — 归档旧目录结构的样本输出后，重新运行以采用新版流程。

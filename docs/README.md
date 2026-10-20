@@ -4,6 +4,7 @@
 
 ## 当前文档
 
+- [核心原理与适用范围](method-overview.zh-CN.md)（[English](method-overview.md)）：通用机制、工程能力、应用边界及示意图。
 - [README](../README.md)：安装、配置、命令与输出。
 - [CHANGELOG](CHANGELOG.md)：当前 2.0.0 变更。
 - [MIGRATION](MIGRATION.md)：升级与结果重算约定。

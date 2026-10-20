@@ -2,12 +2,40 @@
 
 English | [简体中文](README.zh-CN.md)
 
-**From paired-end FASTQ to corrected barcode counts and analysis-ready reports.**
+**From complex barcode sequencing data to traceable molecular evidence and quantitative results.**
 
-TagForge is a command-line workflow for antibody–oligonucleotide barcode
-libraries. It brings barcode extraction, whitelist correction, UMI deduplication,
-saturation analysis, and reporting into one configurable pipeline, with support
-for standard barcode–feature, PI-seq, and PB–CB libraries.
+TagForge is a command-line framework for libraries with an **identity barcode,
+a feature barcode, and a UMI**. It parses segments across paired-end reads,
+corrects barcode identity against whitelists, and clusters UMIs into molecule
+counts. Identity barcodes distinguish cells, samples, or other experimental
+units; feature barcodes identify the measured labels.
+
+Antibody-tag and combinatorial-barcode libraries are primary applications.
+PI-seq multi-PB filtering and PB–CB mapping are experiment-specific extensions
+built on the same core.
+
+## How it works
+
+**Parse library structure → correct barcode segments → cluster UMIs → produce molecule evidence, sparse counts, and diagnostics.**
+
+![TagForge workflow: library parsing, segment correction, UMI counting, outputs, diagnostics, and application scenarios](figures/TagForge_core_principle.en.page-1.png)
+
+<details>
+<summary>Core decisions and engineering advantages — second page</summary>
+
+![TagForge correction decisions, UMI clustering examples, and engineering capabilities](figures/TagForge_core_principle.en.page-2.png)
+
+</details>
+
+[Method details](docs/method-overview.md) ·
+[Two-page PDF](figures/TagForge_core_principle.en.pdf) ·
+[HTML — download and open locally](figures/TagForge_core_principle.en.html)
+
+**Potential extensions:** Sample Tags, CRISPR Guide Capture, Antigen Capture,
+and promoter/reporter barcode libraries can use the same barcode–feature–UMI
+model when their segments and identities are directly extractable. Each library
+requires configuration and data validation; see the method guide for input
+requirements and downstream analysis scope.
 
 ## Why TagForge?
 
@@ -86,7 +114,7 @@ The main configuration choices are:
 | --- | --- |
 | `project` | Project name, working directory, and output directory. |
 | `samples` | Automatic discovery from a shared FASTQ layout, or explicit sample paths. |
-| `barcode1` | Primary barcode segments and their whitelists, such as CELL or PB. |
+| `barcode1` | Identity barcode segments and their whitelists, such as CELL or PB. |
 | `barcode2` | Feature barcode segments, or observed CB sequences for PB–CB libraries. |
 | `umi` | UMI segments in the order they should be concatenated. |
 | `barcode2_annotation` | Feature barcode IDs, sequences, and antibody names. |
@@ -194,6 +222,7 @@ Use `tagforge --help` or `tagforge <command> --help` for command options.
 
 ## Documentation
 
+- [Method overview and application scope](docs/method-overview.md)
 - [Example tutorial](docs/tutorial.md)
 - [2.0.0 release notes](docs/RELEASE_NOTES.md)
 - [Upgrade to 2.0](docs/MIGRATION.md) — archive old-layout sample outputs and rerun to adopt the new workflow.
