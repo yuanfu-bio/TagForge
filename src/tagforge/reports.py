@@ -6,11 +6,10 @@ import gzip
 import html
 import json
 import math
-import os
 from collections import Counter
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote
 
 from . import __version__
 from .barcode_correct import load_fb_annotation, load_whitelist_names, correction_qc_path, load_correction_stats
@@ -20,6 +19,7 @@ from .io_utils import atomic_text, batch_report_dir, open_tsv, sample_dirs, samp
 from .xlsx import write_xlsx
 from .checkpoint import stage_current
 from .selected import selected_summary_path, selection_point
+from .report_style import _REPORT_CSS, _DARK_CSS, _THEME_JS
 from .downsample import SAMPLING_NOTE
 
 
@@ -32,23 +32,16 @@ def primary_result(config, sample):
     return "standard", paths["matrix"] / f"{sample}.raw_molecule_pairs.parquet", "Full-depth UMI-deduplicated barcode-by-feature counts in sparse long format."
 
 
+def _downsample_plot_js(ratios, saturation, non_singleton, umi_types, singletons):
+    return f"""Plotly.newPlot('sat',[{{x:{json.dumps(ratios)},y:{json.dumps(saturation)},name:'Saturation',mode:'lines',yaxis:'y3',line:{{color:'#0f766e',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(non_singleton)},name:'Non-singleton Molecule Fraction',mode:'lines',yaxis:'y3',line:{{color:'#ea580c',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(umi_types)},name:'UMI Types',mode:'lines',yaxis:'y2',line:{{color:'#2563eb',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(singletons)},name:'UMI detected once',mode:'lines',yaxis:'y',line:{{color:'#9333ea',width:3}}}}],{{margin:{{l:60,r:60,t:12,b:95}},paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',font:{{family:'Arial',color:'#172033'}},legend:{{orientation:'h',entrywidthmode:'fraction',entrywidth:0.5,x:0.5,xanchor:'center',y:-0.15}},xaxis:{{title:'Downsample ratio',gridcolor:'#e2e8f0'}},yaxis:{{title:'UMI detected once',domain:[0.05,0.48],gridcolor:'#e2e8f0'}},yaxis2:{{title:'UMI Types',overlaying:'y',side:'right',domain:[0.05,0.48],gridcolor:'#e2e8f0'}},yaxis3:{{title:'',ticksuffix:'%',domain:[0.56,1],range:[0,100],gridcolor:'#e2e8f0'}}}},{{responsive:true}})"""
+
+
 def _result_rows(config, samples):
     rows = [["Sample", "Library", "Primary result (relative to output_dir)", "Description"]]
     for sample in samples:
         library, path, description = primary_result(config, sample)
         rows.append([sample, library, str(path.relative_to(config.output_dir)), description])
     return rows
-
-
-def _result_html(config, samples, directory):
-    rows = []
-    for sample in samples:
-        library, path, description = primary_result(config, sample)
-        href = quote(os.path.relpath(path, directory))
-        rows.append(f'<tr><td>{html.escape(sample)}</td><td>{html.escape(library)}</td>'
-                    f'<td><a href="{html.escape(href, quote=True)}">{html.escape(path.name)}</a></td>'
-                    f'<td>{html.escape(description)}</td></tr>')
-    return '<section class="panel"><h2>Main results</h2><table><tr><th>Sample</th><th>Library</th><th>Primary result</th><th>Description</th></tr>' + ''.join(rows) + '</table></section>'
 
 
 def _rows(path: Path):
@@ -169,20 +162,305 @@ def _analysis_rows(config, sample, dirs):
             [selection_point(config, sample)])
 
 
+@lru_cache(maxsize=32)
+def _legacy_total_pbs(path, size, mtime_ns):
+    """Count unique PBs in the sorted full mapping without holding them in memory.
+
+    File metadata keys the cache so sample/batch workbooks share one scan while
+    changed mappings are recounted. Older summaries did not store total_pbs.
+    """
+    total, previous = 0, None
+    with gzip.open(path, "rb") as handle:
+        next(handle, None)  # The full mapping writes PB as the first column.
+        for line in handle:
+            pb = line.split(b"\t", 1)[0]
+            if previous is not None and pb < previous:
+                raise ConfigError(f"PB-CB mapping is not sorted by PB: {path}")
+            if pb != previous:
+                total += 1
+                previous = pb
+    return total
+
+
+def _pair_mapping_pb_stats(config, sample, summary):
+    total = summary.get("total_pbs")
+    if total is None:
+        path = (sample_paths(config.output_dir, sample)["matrix"] /
+                f"{sample}.pb_cb_mapping.tsv.gz").resolve()
+        stat = path.stat()
+        total = _legacy_total_pbs(path, stat.st_size, stat.st_mtime_ns)
+    retained = int(summary["retained_pbs"])
+    total = int(total)
+    if not 0 <= retained <= total:
+        raise ConfigError(f"Invalid PB counts for {sample}: {retained} retained / {total} total")
+    return total, retained, retained / total if total else 0.0
+
+
+def _pair_mapping_dominance_qc(config, sample, summary):
+    from .dominance_qc import (legacy_dominance_qc, mapping_sources,
+                               source_signature, validate_dominance_qc)
+    if "dominance_qc" in summary:
+        return validate_dominance_qc(summary["dominance_qc"], summary)
+    threshold = summary.get("dominance_threshold", config.pb_cb_dominance_threshold)
+    sources = mapping_sources(config, sample)
+    signature = source_signature(sources, threshold)
+    cache = sample_paths(config.output_dir, sample)["report"] / f"{sample}.dominance_qc.json"
+    if cache.is_file():
+        try:
+            saved = json.loads(cache.read_text())
+            if saved.get("source") == signature:
+                return validate_dominance_qc(saved["qc"], summary)
+        except (ValueError, KeyError, TypeError):
+            pass  # Recompute an obsolete or incomplete report cache.
+    mapping, aliases = signature["files"]
+    if summary.get("cb_aliases", 0) and aliases["size"] is None:
+        raise ConfigError(f"CB correction table is required for PB diagnostics: {sources[1]}")
+    qc = legacy_dominance_qc(
+        Path(mapping["path"]), mapping["size"], mapping["mtime_ns"],
+        Path(aliases["path"]), aliases["size"], aliases["mtime_ns"], threshold)
+    return validate_dominance_qc(qc, summary)
+
+
+def _assignment_sheets(config, samples):
+    outcomes = [["Sample", "Outcome", "PB count", "PB fraction (%)"]]
+    histograms = [["Sample", "Dominant ratio lower", "Dominant ratio upper", "Passed multi-CB PBs", "Failed multi-CB PBs"]]
+    definitions = [["Metric", "Definition"],
+        ["Statistical basis", "CB-corrected PB-CB relations before dominance filtering; read support, not molecule counts."],
+        ["Single-CB assigned", "PB already associated with one corrected CB and reaching the dominance threshold."],
+        ["Assigned to dominant CB", "PB associated with multiple corrected CBs; leading CB is at least the threshold. Keep only that CB."],
+        ["Unassigned", "No CB reaches the threshold; all relations for this PB are removed."],
+        ["Multi-CB PB pass rate", "100 * multi-CB PBs assigned to their dominant CB / all multi-CB PBs; blank when no multi-CB PBs exist."],
+        ["Dominance distribution", "Only multi-CB PBs; 5-percentage-point bins [lower, upper), with 100% included in the last bin. Passed and failed counts use the exact threshold (>=), even within the same bin."]]
+    for sample in samples:
+        path = sample_paths(config.output_dir, sample)["matrix"] / f"{sample}.pb_cb_summary.json"
+        qc = _pair_mapping_dominance_qc(config, sample, json.loads(path.read_text()))
+        for label, key in (("Single-CB assigned", "single_cb_retained_pbs"),
+                           ("Assigned to dominant CB", "resolved_multi_cb_pbs"), ("Unassigned", "unassigned_pbs")):
+            outcomes.append([sample, label, qc[key], 100 * qc[key] / qc["total_pbs"] if qc["total_pbs"] else 0])
+        histograms.extend([sample, b["lower"], b["upper"], b["passed_pbs"], b["failed_pbs"]]
+                          for b in qc["dominant_ratio_histogram"])
+    return [("PB Assignment", outcomes), ("Dominance Distribution", histograms), ("Assignment Definitions", definitions)]
+
+
+def _assignment_panel(qc):
+    total, multi = qc["total_pbs"], qc["multi_cb_pbs"]
+    pass_text = f"{qc['retained_pbs'] / total:.1%}" if total else "N/A"
+    threshold = f"{100 * qc['dominance_threshold']:g}%"
+    return f'''<section class="panel"><h2>PB Assignment</h2><p class="sub">After CB correction, assign each PB to its leading CB only when that CB accounts for &ge;{threshold} of supporting reads; otherwise leave the PB unassigned.</p>
+<div class="report-grid"><div style="min-width:0"><h3>PB Assignment Outcomes</h3>
+<div class="mini-grid"><div class="card"><div class="sub">Total PB</div><div class="value">{total:,}</div><div class="sub">PBs evaluated</div></div>
+<div class="card"><div class="sub">PB Pass Rate</div><div class="value">{pass_text}</div><div class="sub">{qc['retained_pbs']:,} PBs passed</div></div></div>
+<div id="pb-pass-rate" style="height:200px"></div></div>
+<div style="min-width:0"><h3>Dominant CB Support · Multi-CB PBs</h3>
+<div id="pb-dominance" style="height:300px"></div></div></div>
+</section>'''
+
+
+
+def _assignment_plot_js(qc, names=None, counts=None):
+    categories = [("Single-CB assigned", "single_cb_retained_pbs", "#2563eb"),
+                  ("Assigned to dominant CB", "resolved_multi_cb_pbs", "#0f766e"),
+                  ("Unassigned", "unassigned_pbs", "#ea580c")]
+    names = ["PBs"] if names is None else names
+    records = [qc] if counts is None else counts
+    traces = []
+    for label, key, color in categories:
+        traces.append({"type": "bar", "orientation": "h", "name": label, "y": names,
+            "width": 0.24 if counts is None else 0.45,
+            "x": [r[key] / r["total_pbs"] if r["total_pbs"] else 0 for r in records],
+            "customdata": [[r[key], r["total_pbs"]] for r in records], "marker": {"color": color},
+            "hovertemplate": label + '<br>%{y}<br>%{customdata[0]:,} PBs<br>%{x:.1%} of all PBs<extra></extra>'})
+    layout = {"barmode": "stack", "margin": {"l": 120 if counts is not None else 45, "r": 24, "t": 45, "b": 60},
+        "paper_bgcolor": "#ffffff", "plot_bgcolor": "#ffffff", "font": {"family": "Arial", "color": "#172033"},
+        "legend": {"orientation": "h", "y": 1.04, "yanchor": "bottom", "traceorder": "normal"}, "yaxis": {"showgrid": False, "autorange": "reversed"},
+        "xaxis": {"title": "Fraction of all PBs", "tickformat": ".0%", "range": [0, 1], "gridcolor": "#e2e8f0"}}
+    if counts is None:
+        layout["yaxis"].update(autorange=False, range=[0.5, -0.5])
+    js = f"Plotly.newPlot('pb-pass-rate',{json.dumps(traces)},{json.dumps(layout)},{{responsive:true,displayModeBar:false}});"
+    if counts is not None:
+        return js
+    bins = qc["dominant_ratio_histogram"]
+    hist = []
+    for label, key, color in (("Passed", "passed_pbs", "#0f766e"), ("Unassigned", "failed_pbs", "#ea580c")):
+        hist.append({"type": "bar", "name": label, "x": [(b["lower"] + b["upper"]) / 2 for b in bins],
+            "y": [b[key] / qc["multi_cb_pbs"] if qc["multi_cb_pbs"] else 0 for b in bins], "width": 0.048, "marker": {"color": color},
+            "customdata": [[b["lower"], b["upper"], b[key]] for b in bins],
+            "hovertemplate": label + '<br>Dominant share: %{customdata[0]:.0%}–%{customdata[1]:.0%}<br>%{y:.1%} of multi-CB PBs (%{customdata[2]:,})<extra></extra>'})
+    histogram_layout = {**layout, "margin": {"l": 75, "r": 24, "t": 50, "b": 60},
+        "legend": {"orientation": "h", "y": 1.03, "yanchor": "bottom", "traceorder": "normal"},
+        "xaxis": {"title": "Leading CB / total supporting reads", "tickformat": ".0%", "range": [0, 1], "gridcolor": "#e2e8f0"},
+        "yaxis": {"title": "Share of multi-CB PBs", "tickformat": ".0%", "rangemode": "tozero", "gridcolor": "#e2e8f0"},
+        "shapes": [{"type": "line", "xref": "x", "yref": "paper", "x0": qc["dominance_threshold"],
+                    "x1": qc["dominance_threshold"], "y0": 0, "y1": 1, "line": {"color": "#64748b", "dash": "dash", "width": 2}}]}
+    resolution_text = f"{qc['resolved_multi_cb_pbs'] / qc['multi_cb_pbs']:.1%}" if qc["multi_cb_pbs"] else "N/A"
+    histogram_layout["annotations"] = [{"text": f"Multi-CB PB Pass Rate: <b>{resolution_text}</b>",
+        "xref": "paper", "yref": "paper", "x": 0.03, "y": 0.98, "xanchor": "left", "yanchor": "top",
+        "showarrow": False, "font": {"family": "Arial", "size": 13}}]
+    if not qc["multi_cb_pbs"]:
+        histogram_layout["annotations"].append({"text": "No multi-CB PBs", "xref": "paper", "yref": "paper",
+                                              "x": 0.5, "y": 0.5, "showarrow": False})
+    return js + f"Plotly.newPlot('pb-dominance',{json.dumps(hist)},{json.dumps(histogram_layout)},{{responsive:true,displayModeBar:false}});"
+
+
 def _pair_mapping_rows(config, samples):
     rows = [["Sample", "Total reads", "Valid reads", "Raw molecules", "Resolved molecules",
              "Supporting reads", "Retained PBs", "Retained CBs", "Retained molecules",
-             "Retained supporting reads", "CB aliases", "Dominance basis", "Downsample status"]]
+             "Retained supporting reads", "CB aliases", "Dominance basis", "Downsample status",
+             "Total PBs", "PB pass rate", "Single-CB PBs", "Multi-CB PBs",
+             "PBs assigned to dominant CB", "Unassigned PBs", "Multi-CB PB pass rate",
+             "Valid ratio", "Saturation", "Non-singleton molecule fraction"]]
     for sample in samples:
         dirs = sample_dirs(config.output_dir, sample)
         payload = json.loads((dirs["matrix"] / f"{sample}.pb_cb_summary.json").read_text())
         stats = next((row for row in load_correction_stats(correction_qc_path(dirs["corrected"], sample))
                       if row["scope"] == "combined"), {})
+        qc = _pair_mapping_dominance_qc(config, sample, payload)
+        total_pbs, _, pb_pass_rate = _pair_mapping_pb_stats(config, sample, {**payload, "total_pbs": qc["total_pbs"]})
+        point = selection_point(config, sample) if config.downsample_enabled else {}
+        percent = lambda key: float(point[key]) if key in point else None
         rows.append([sample, int(stats.get("total_reads", 0)), int(stats.get("valid_reads", 0)),
                      *[payload[key] for key in ("raw_molecules", "resolved_molecules", "supporting_reads",
                         "retained_pbs", "retained_cbs", "retained_molecules", "retained_supporting_reads", "cb_aliases")],
-                     payload["dominance_basis"], "completed" if config.downsample_enabled else "not run"])
+                     payload["dominance_basis"], "completed" if config.downsample_enabled else "not run",
+                     total_pbs, 100 * pb_pass_rate, qc["single_cb_pbs"], qc["multi_cb_pbs"],
+                     qc["resolved_multi_cb_pbs"], qc["unassigned_pbs"],
+                     100 * qc["resolved_multi_cb_pbs"] / qc["multi_cb_pbs"] if qc["multi_cb_pbs"] else None,
+                     100 * float(stats.get("valid_rate", 0) or 0), percent("sequencing_saturation"),
+                     percent("max_non_singleton_molecule_fraction")])
     return rows
+
+
+def _pair_mapping_sample_html(config, sample_name):
+    dirs = sample_dirs(config.output_dir, sample_name)
+    summary = json.loads((dirs["matrix"] / f"{sample_name}.pb_cb_summary.json").read_text())
+    qc = _pair_mapping_dominance_qc(config, sample_name, summary)
+    stat_records = load_correction_stats(correction_qc_path(dirs["corrected"], sample_name))
+    combined = next((r for r in stat_records if r["scope"] == "combined"), {})
+    total_reads = int(combined.get("total_reads", 0) or 0)
+    valid_rate = float(combined.get("valid_rate", 0) or 0)
+    resolved, retained = summary["resolved_molecules"], summary["retained_molecules"]
+    extraction_records = list(open_tsv(dirs["extracted"] / f"{sample_name}.extraction_stats.tsv"))
+    barcode_segments = {segment.name: segment for segment in config.segments if segment.target in {"barcode1", "barcode2"}}
+    correction_rates = {row["scope"]: float(row.get("valid_rate", 0) or 0) for row in stat_records}
+    validation_rows = "".join(
+        f'<tr><td>{html.escape(barcode_segments[row["segment"]].target_name or barcode_segments[row["segment"]].target)}</td>'
+        f'<td>{html.escape(row["segment"])}</td>'
+        f'<td>{format(float(row["linker_success_rate"]), ".1%") if row["linker_attempted"] != "0" else "/"}</td>'
+        f'<td>{correction_rates.get(row["segment"], 0):.1%}</td></tr>'
+        for row in extraction_records if row["segment"] in barcode_segments)
+    ratio = lambda part, whole: part / whole if whole else 0.0
+    metric_records, point_records = _analysis_rows(config, sample_name, dirs)
+    point = point_records[0] if point_records else {}
+    card = lambda name, value: f'<div class="card"><div class="sub">{name}</div><div class="value">{value}</div></div>'
+    selection_cards = (
+        card("Saturation", f'{float(point.get("sequencing_saturation", 0) or 0):.1f}%')
+        + card("Non-singleton Molecule Fraction", f'{float(point.get("max_non_singleton_molecule_fraction", 0) or 0):.1f}%')
+        if config.downsample_enabled else "")
+    cards = "".join([
+        card("Total Reads", f"{total_reads:,}"), card("Valid Ratio", f"{valid_rate:.1%}"),
+        card("Molecules", f"{resolved:,}"), card("Retained Molecules", f"{retained:,}"),
+        card("PB", f"{summary['retained_pbs']:,}"), card("CB", f"{summary['retained_cbs']:,}")]) + selection_cards
+    flags = []
+    if valid_rate < 0.5:
+        flags.append("Combined barcode/UMI valid rate is below 50%.")
+    if ratio(retained, resolved) < 0.5:
+        flags.append(f"Fewer than 50% of resolved molecules are retained after dominance filtering ({ratio(retained, resolved):.1%}).")
+    weak_linkers = [f'{row["segment"]} ({float(row["linker_success_rate"]):.1%})'
+                    for row in extraction_records if row["segment"] in barcode_segments
+                    and row["linker_attempted"] != "0" and float(row["linker_success_rate"]) < 0.5]
+    if weak_linkers:
+        flags.append("Linker success is below 50% for: " + ", ".join(weak_linkers) + ".")
+    warning_html = (f'<section class="panel"><h2>Warnings</h2><ul>{"".join(f"<li>{html.escape(flag)}</li>" for flag in flags)}</ul></section>'
+                    if flags else "")
+    sat_js = ""
+    downsample_panel = ""
+    if config.downsample_enabled and metric_records:
+        sat_js = _downsample_plot_js(
+            [float(r["downsample_ratio"]) for r in metric_records], [float(r["sequencing_saturation"]) for r in metric_records],
+            [float(r["non_singleton_molecule_fraction"]) for r in metric_records], [float(r["umi_types"]) for r in metric_records],
+            [float(r["umi_detected_once"]) for r in metric_records]) + ";"
+        downsample_panel = '<section class="panel"><h2>Downsample</h2><div id="sat" style="height:430px"></div></section>'
+    plots = _assignment_plot_js(qc)
+    ids = ["pb-pass-rate", "pb-dominance"] + (["sat"] if sat_js else [])
+    return f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge · {html.escape(sample_name)}</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{_REPORT_CSS}</style></head><body><main>
+<style>{_DARK_CSS}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / SAMPLE REPORT</p><h1>{html.escape(sample_name)}</h1>
+<div class="cards">{cards}</div>
+<div class="report-grid"><section class="panel"><h2>Barcode Validation</h2><table><tr><th>Barcode</th><th>Segment</th><th>Linker</th><th>Final</th></tr>{validation_rows}</table></section>{downsample_panel}</div>
+{_assignment_panel(qc)}
+{warning_html}
+<script>{plots}{sat_js}{_THEME_JS};document.querySelector('.theme').onclick=function(){{toggleTheme(this,{json.dumps(ids)})}};</script></main></body></html>'''
+
+
+_PERCENT_COLUMNS = {"Valid ratio", "Saturation", "Non-singleton molecule fraction",
+                    "PB pass rate", "Multi-CB PB pass rate"}
+
+
+def _batch_downsample_js(config, samples):
+    """Per-sample downsample curves on four shared panels, as in the standard batch report."""
+    curves = {}
+    for sample in samples:
+        metrics = _analysis_rows(config, sample, sample_dirs(config.output_dir, sample))[0]
+        curves[sample] = {"x": [float(r["downsample_ratio"]) for r in metrics],
+                          "saturation": [float(r["sequencing_saturation"]) for r in metrics],
+                          "non_singleton": [float(r["non_singleton_molecule_fraction"]) for r in metrics],
+                          "umi_types": [float(r["umi_types"]) for r in metrics],
+                          "singletons": [float(r["umi_detected_once"]) for r in metrics]}
+    panels = [("saturation", "Saturation (%)", [0, 100]), ("non_singleton", "Non-singleton Molecule Fraction (%)", [0, 100]),
+              ("umi_types", "UMI Types", None), ("singletons", "UMI detected once", None)]
+    domains = [[0, .21], [.26, .47], [.53, .74], [.79, 1]]
+    colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52"]
+    traces, layout = [], {"margin": {"l": 55, "r": 25, "t": 52, "b": 90}, "font": {"family": "Arial"},
+        "paper_bgcolor": "#ffffff", "plot_bgcolor": "#ffffff", "legend": {"orientation": "h", "y": -.18, "groupclick": "togglegroup"},
+        "annotations": []}
+    for i, (key, title, axis_range) in enumerate(panels):
+        suffix = "" if i == 0 else str(i + 1)
+        for j, (name, data) in enumerate(curves.items()):
+            traces.append({"x": data["x"], "y": data[key], "name": name, "mode": "lines", "legendgroup": name,
+                           "showlegend": i == 0, "line": {"width": 3, "color": colors[j % len(colors)]},
+                           "xaxis": "x" + suffix, "yaxis": "y" + suffix})
+        layout["xaxis" + suffix] = {"domain": domains[i], "anchor": "y" + suffix, "title": "Downsample ratio", "gridcolor": "#e2e8f0"}
+        layout["yaxis" + suffix] = {"domain": [0, 1], "anchor": "x" + suffix, "gridcolor": "#e2e8f0",
+                                    **({"range": axis_range} if axis_range else {})}
+        layout["annotations"].append({"text": title, "x": sum(domains[i]) / 2, "y": 1.1, "xref": "paper",
+                                      "yref": "paper", "showarrow": False})
+    return f"Plotly.newPlot('ds',{json.dumps(traces)},{json.dumps(layout)},{{responsive:true}});"
+
+
+def _pair_mapping_batch_html(config, samples, overview):
+    head, body = overview[0], overview[1:]
+    cols = ["Sample", "Total reads", "Valid ratio", "Saturation", "Non-singleton molecule fraction",
+            "Total PBs", "Retained PBs", "PB pass rate", "Single-CB PBs",
+            "PBs assigned to dominant CB", "Unassigned PBs", "Multi-CB PB pass rate", "Retained CBs"]
+    index = [head.index(name) for name in cols]
+    def cell(row, position, name):
+        value = row[position]
+        if name == "Sample":
+            return html.escape(str(value))
+        if name in _PERCENT_COLUMNS:
+            return f"{float(value):.1f}%" if value is not None else "N/A"
+        return format(int(value), ',')
+    table = "<tr>" + "".join(f"<th>{c}</th>" for c in cols) + "</tr>" + "".join(
+        "<tr>" + "".join(f"<td>{cell(row, i, name)}</td>" for name, i in zip(cols, index)) + "</tr>"
+        for row in body)
+    names = [row[0] for row in body]
+    records = [{"total_pbs": row[head.index("Total PBs")],
+                "single_cb_retained_pbs": row[head.index("Retained PBs")] - row[head.index("PBs assigned to dominant CB")],
+                "resolved_multi_cb_pbs": row[head.index("PBs assigned to dominant CB")],
+                "unassigned_pbs": row[head.index("Unassigned PBs")]} for row in body]
+    plot = _assignment_plot_js(None, names, records)
+    ds_panel = ds_js = ""
+    ids = ["pb-pass-rate"]
+    if getattr(config, "downsample_enabled", False):
+        ds_panel = '<section class="panel"><h2>Downsample</h2><div id="ds" style="height:400px"></div></section>'
+        ds_js, ids = _batch_downsample_js(config, samples), ["pb-pass-rate", "ds"]
+    return f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge · Batch report</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{_REPORT_CSS}</style></head><body><main>
+<style>{_DARK_CSS}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / BATCH REPORT</p><h1>PB–CB mapping</h1>
+<section class="panel"><h2>Overview</h2><div class="scroll-window" style="height:auto;max-height:520px"><table>{table}</table></div></section>
+{ds_panel}
+<section class="panel"><h2>PB Assignment Outcomes</h2><div id="pb-pass-rate" style="height:{max(250, 60 * len(names) + 120)}px"></div></section>
+<script>{plot}{ds_js}{_THEME_JS};document.querySelector('.theme').onclick=function(){{toggleTheme(this,{json.dumps(ids)})}};</script></main></body></html>'''
 
 
 def _pair_mapping_report(config, samples, sample_name=None):
@@ -193,9 +471,18 @@ def _pair_mapping_report(config, samples, sample_name=None):
     directory.mkdir(parents=True, exist_ok=True)
     prefix = f"{sample_name}.report" if sample_name else "TagForge_batch_report"
     xlsx, report_html = directory / f"{prefix}.xlsx", directory / f"{prefix}.html"
+    qc_path = None
+    if sample_name:
+        from .dominance_qc import mapping_sources, source_signature
+        path = sample_paths(config.output_dir, sample_name)["matrix"] / f"{sample_name}.pb_cb_summary.json"
+        summary = json.loads(path.read_text())
+        qc = _pair_mapping_dominance_qc(config, sample_name, summary)
+        qc_path = directory / f"{sample_name}.dominance_qc.json"
+        with atomic_text(qc_path) as handle:
+            json.dump({"source": source_signature(mapping_sources(config, sample_name), qc["dominance_threshold"]), "qc": qc}, handle, sort_keys=True)
     overview = _pair_mapping_rows(config, samples)
     if sample_name:
-        sheets = [("Results", _result_rows(config, samples)), ("Overview", overview)]
+        sheets = [("Results", _result_rows(config, samples)), ("Overview", overview)] + _assignment_sheets(config, samples)
         if config.downsample_enabled:
             sheets.append(("Downsample Definitions", [["Analysis", SAMPLING_NOTE]]))
             d = sample_dirs(config.output_dir, sample_name)["downsample"]
@@ -210,16 +497,10 @@ def _pair_mapping_report(config, samples, sample_name=None):
         write_xlsx(xlsx, sheets)
     else:
         _write_batch_workbook(config, samples)
-    cells = lambda row, tag: "".join(f"<{tag}>{html.escape(str(value))}</{tag}>" for value in row)
-    table = '<tr>' + cells(overview[0], 'th') + '</tr>' + ''.join('<tr>' + cells(row, 'td') + '</tr>' for row in overview[1:])
+    page = _pair_mapping_sample_html(config, sample_name) if sample_name else _pair_mapping_batch_html(config, samples, overview)
     with atomic_text(report_html) as handle:
-        handle.write(f'<!doctype html><html><head><meta charset="utf-8"><title>TagForge PB–CB report</title>'
-                     '<style>body{font:15px Arial,sans-serif;margin:32px}table{border-collapse:collapse}th,td{padding:10px;border:1px solid #ddd}</style></head><body>'
-                     f'<h1>PB–CB mapping</h1><p>Dominance uses read support; retained PB–CB–UMI molecules are merged after CB alias resolution. Threshold: {config.pb_cb_dominance_threshold} (strictly greater).</p>'
-                     f'{_result_html(config, samples, directory) if sample_name else ""}'
-                     + (f'<p>{html.escape(SAMPLING_NOTE) if config.downsample_enabled else "Downsample not run."}</p>' if sample_name else "")
-                     + f'<table>{table}</table><p>The workbook previews up to 1,000 retained mappings per sample. Full mappings remain in pb_cb_map.tsv.gz.</p></body></html>')
-    return [xlsx, report_html]
+        handle.write(page)
+    return [xlsx, report_html] + ([qc_path] if qc_path else [])
 
 
 def report_sample(config: TagForgeConfig, sample_name: str):
@@ -319,16 +600,16 @@ def report_sample(config: TagForgeConfig, sample_name: str):
             f'<p>Annotated is below 90% ({annotated_rate:.1%}). Top 10 FB_not_in_anno:</p><table><tr><th>FB_not_in_anno</th><th>Count</th></tr>{annotation_warning_rows}</table>'
             if annotated_rate < 0.9 else "")
         warning_html = f'<section class="panel"><h2>Warnings</h2><ul>{"".join(f"<li>{html.escape(flag)}</li>" for flag in flags)}</ul>{annotation_warning}</section>'
-    selection_cards = f'''<div class="card"><div class="sub">Saturation at selected ratio</div><div class="value">{optimal_saturation:.1f}%</div></div><div class="card"><div class="sub">Selected ratio non-singleton fraction</div><div class="value">{max_non_singleton:.1f}%</div></div><div class="card"><div class="sub">Selected downsample ratio</div><div class="value">{optimal_ratio:.4g}</div></div>''' if config.downsample_enabled else ''
+    selection_cards = f'''<div class="card"><div class="sub">Saturation</div><div class="value">{optimal_saturation:.1f}%</div></div><div class="card"><div class="sub">Non-singleton Molecule Fraction</div><div class="value">{max_non_singleton:.1f}%</div></div>''' if config.downsample_enabled else ''
     page = f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge · {html.escape(sample_name)}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>body{{margin:0;background:#f5f7fb;color:#172033;font:15px Arial,sans-serif}}main{{max-width:1180px;margin:auto;padding:36px}}h1{{font-size:36px;margin:0}}.section-title{{margin:36px 0 16px;padding-top:28px;border-top:1px solid #dce3ee}}.sub{{color:#64748b}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin:28px 0}}.mini-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:14px 0}}.pi-column{{min-width:0}}.pi-metrics{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:0 0 14px}}.pi-top-panel h3{{margin:0 0 8px}}.pi-top-panel h4{{margin:8px 0 0}}.report-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:14px;align-items:stretch;margin:16px 0}}.report-grid .panel{{margin:0;display:flex;flex-direction:column;min-width:0;overflow:hidden}}#sat,#features{{width:100%;min-width:0}}.scroll-window{{height:520px;overflow:auto;border:1px solid #e6ebf2;border-radius:8px}}.scroll-window th{{position:sticky;top:0;z-index:1}}.icon-button{{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:1px solid #94a3b8;border-radius:8px;background:white;color:#172033;cursor:pointer;font-size:19px}}.card,.panel{{background:white;border:1px solid #dce3ee;border-radius:14px;padding:18px}}.value{{font-size:28px;font-weight:750;color:#155e75}}.panel{{margin:16px 0;overflow:auto}}table{{border-collapse:collapse;width:100%}}td,th{{padding:9px;border-bottom:1px solid #e6ebf2;text-align:left}}th{{color:#475569;background:#f8fafc}}</style></head><body><main>
-<style>.theme{{float:right}}body.dark{{background:#07111f;color:#e5edf8}}body.dark .card,body.dark .panel{{background:#0f1d30;border-color:#24344d}}body.dark .sub{{color:#94a3b8}}body.dark th{{background:#17263b;color:#93c5fd}}body.dark td,body.dark th,body.dark .scroll-window{{border-color:#24344d}}body.dark .value{{color:#5eead4}}body.dark .section-title{{border-color:#24344d}}body.dark .icon-button{{background:#0f1d30;color:#e5edf8;border-color:#64748b}}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / SAMPLE REPORT</p><h1>{html.escape(sample_name)}</h1>{_result_html(config, [sample_name], dirs["report"])}<div class="cards">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{_REPORT_CSS}</style></head><body><main>
+<style>{_DARK_CSS}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / SAMPLE REPORT</p><h1>{html.escape(sample_name)}</h1><div class="cards">
 <div class="card"><div class="sub">Total Reads</div><div class="value">{int(combined.get('total_reads', 0) or 0):,}</div></div><div class="card"><div class="sub">Features</div><div class="value">{len(features):,}</div></div><div class="card"><div class="sub">Valid Ratio</div><div class="value">{valid_rate:.1%}</div></div><div class="card"><div class="sub">Annotated</div><div class="value">{annotated_rate:.1%}</div></div><div class="card"><div class="sub">Molecules</div><div class="value">{molecule_count:,}</div></div><div class="card"><div class="sub">{html.escape(barcode1_name)}</div><div class="value">{b1_count:,}</div></div>{selection_cards}</div>
-<div class="report-grid"><section class="panel"><h2>Barcode Validation</h2><table><tr><th>Barcode</th><th>Segment</th><th>Linker</th><th>Final</th></tr>{validation_rows}</table></section><section class="panel"><h2>Downsample</h2>{'<p>Not run. Counts use full-depth molecules.</p>' if not config.downsample_enabled else '<p>'+html.escape(SAMPLING_NOTE)+'</p>'}<div id="sat" style="height:430px" {'hidden' if not config.downsample_enabled else ''}></div></section></div>
+<div class="report-grid"><section class="panel"><h2>Barcode Validation</h2><table><tr><th>Barcode</th><th>Segment</th><th>Linker</th><th>Final</th></tr>{validation_rows}</table></section><section class="panel"><h2>Downsample</h2><div id="sat" style="height:430px" {'hidden' if not config.downsample_enabled else ''}></div></section></div>
 <div class="report-grid"><section class="panel"><h2>Top 20 Feature</h2><div id="features" style="height:520px"></div></section><section class="panel"><h2>Feature Counts</h2><div class="scroll-window"><table><tr><th>Feature</th><th>Counts</th><th>Ratio</th></tr>{feature_table_rows}</table></div></section></div>
 {warning_html}
 {_pi_seq_matrix_section(pi_seq_pb_records, pi_qc, config.pi_seq_dominance_threshold) if config.pi_seq_enabled else ""}
-<script>const featureData={{names:{json.dumps([name for name, _ in top_features])},counts:{json.dumps([count for _, count in top_features])}}};const featurePlot=document.getElementById('features');Plotly.newPlot(featurePlot,[{{type:'bar',orientation:'h',x:featureData.counts,y:featureData.names,marker:{{color:'#0f766e'}},hovertemplate:'%{{y}}<br>%{{x:,}} molecules<extra></extra>'}}],{{autosize:true,yaxis:{{autorange:'reversed',automargin:true}},margin:{{l:60,r:30,t:16,b:50}},paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',font:{{family:'Arial',color:'#172033'}}}},{{responsive:true}});function toggleTheme(button){{const dark=document.body.classList.toggle('dark');button.textContent=dark?'☀':'☾';button.setAttribute('aria-label',dark?'Switch to light theme':'Switch to dark theme');button.title=button.getAttribute('aria-label');const grid=dark?'#24344d':'#e2e8f0';const surface=dark?'#0f1d30':'#ffffff';const font=dark?'#cbd5e1':'#172033';Plotly.relayout('sat',{{'paper_bgcolor':surface,'plot_bgcolor':surface,'font.color':font,'font.family':'Arial','xaxis.gridcolor':grid,'yaxis.gridcolor':grid,'yaxis2.gridcolor':grid,'yaxis3.gridcolor':grid}});Plotly.relayout('features',{{'paper_bgcolor':surface,'plot_bgcolor':surface,'font.color':font,'font.family':'Arial'}});if(document.getElementById('pi-molecules')){{const piTheme={{'paper_bgcolor':surface,'plot_bgcolor':surface,'font.color':font,'font.family':'Arial','xaxis.gridcolor':grid,'yaxis.gridcolor':grid}};Plotly.relayout('pi-molecules',piTheme);Plotly.relayout('pi-proteins',piTheme);Plotly.relayout('pi-distribution',{{...piTheme,'xaxis.gridcolor':grid,'yaxis.gridcolor':grid}});}}}}document.querySelector('.theme').onclick=function(){{toggleTheme(this)}};Plotly.newPlot('sat',[{{x:{json.dumps(ratios)},y:{json.dumps(saturation)},name:'Saturation',mode:'lines',yaxis:'y3',line:{{color:'#0f766e',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(non_singleton)},name:'Non-singleton Molecule Fraction',mode:'lines',yaxis:'y3',line:{{color:'#ea580c',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(umi_types)},name:'UMI Types',mode:'lines',yaxis:'y2',line:{{color:'#2563eb',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(singletons)},name:'UMI detected once',mode:'lines',yaxis:'y',line:{{color:'#9333ea',width:3}}}}],{{margin:{{l:60,r:60,t:12,b:70}},paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',font:{{family:'Arial',color:'#172033'}},legend:{{orientation:'h',x:0.5,xanchor:'center',y:-0.15}},xaxis:{{title:'Downsample ratio',gridcolor:'#e2e8f0'}},yaxis:{{title:'UMI detected once',domain:[0.05,0.48],gridcolor:'#e2e8f0'}},yaxis2:{{title:'UMI Types',overlaying:'y',side:'right',domain:[0.05,0.48],gridcolor:'#e2e8f0'}},yaxis3:{{title:'',ticksuffix:'%',domain:[0.56,1],range:[0,100],gridcolor:'#e2e8f0'}}}},{{responsive:true}})</script></main></body></html>'''
+<script>const featureData={{names:{json.dumps([name for name, _ in top_features])},counts:{json.dumps([count for _, count in top_features])}}};const featurePlot=document.getElementById('features');Plotly.newPlot(featurePlot,[{{type:'bar',orientation:'h',x:featureData.counts,y:featureData.names,marker:{{color:'#0f766e'}},hovertemplate:'%{{y}}<br>%{{x:,}} molecules<extra></extra>'}}],{{autosize:true,yaxis:{{autorange:'reversed',automargin:true}},margin:{{l:60,r:30,t:16,b:50}},paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',font:{{family:'Arial',color:'#172033'}}}},{{responsive:true}});function toggleTheme(button){{const dark=document.body.classList.toggle('dark');button.textContent=dark?'☀':'☾';button.setAttribute('aria-label',dark?'Switch to light theme':'Switch to dark theme');button.title=button.getAttribute('aria-label');const grid=dark?'#24344d':'#e2e8f0';const surface=dark?'#0f1d30':'#ffffff';const font=dark?'#cbd5e1':'#172033';Plotly.relayout('sat',{{'paper_bgcolor':surface,'plot_bgcolor':surface,'font.color':font,'font.family':'Arial','xaxis.gridcolor':grid,'yaxis.gridcolor':grid,'yaxis2.gridcolor':grid,'yaxis3.gridcolor':grid}});Plotly.relayout('features',{{'paper_bgcolor':surface,'plot_bgcolor':surface,'font.color':font,'font.family':'Arial'}});if(document.getElementById('pi-molecules')){{const piTheme={{'paper_bgcolor':surface,'plot_bgcolor':surface,'font.color':font,'font.family':'Arial','xaxis.gridcolor':grid,'yaxis.gridcolor':grid}};Plotly.relayout('pi-molecules',piTheme);Plotly.relayout('pi-proteins',piTheme);Plotly.relayout('pi-distribution',{{...piTheme,'xaxis.gridcolor':grid,'yaxis.gridcolor':grid}});}}}}document.querySelector('.theme').onclick=function(){{toggleTheme(this)}};{_downsample_plot_js(ratios, saturation, non_singleton, umi_types, singletons)}</script></main></body></html>'''
     with atomic_text(report_html) as handle: handle.write(page)
     return [xlsx, report_html]
 
@@ -540,7 +821,7 @@ def _batch_workbook_sheets(config, samples):
     downsample, _ = _downsample_table(config, samples)
     if getattr(config, "pb_cb_enabled", False):
         from itertools import islice
-        sheets = [("Summary", _pair_mapping_rows(config, samples)), ("Downsample", downsample)]
+        sheets = [("Summary", _pair_mapping_rows(config, samples)), ("Downsample", downsample)] + _assignment_sheets(config, samples)
         if getattr(config, "downsample_enabled", True):
             sheets.append(("Downsample Definitions", [["Analysis", SAMPLING_NOTE]]))
         for sample in samples:

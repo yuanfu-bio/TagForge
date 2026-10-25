@@ -122,7 +122,7 @@ class QCTests(unittest.TestCase):
         self.assertEqual(values["duplication_ratio_unit"], "percent")
         self.assertEqual(values["rate_unit"], "fraction")
         self.assertEqual(float(values["combined_valid_rate"]), 1)
-        self.assertIn("Duplication: 50.00%", result["html"].read_text())
+        self.assertIn('<div class="value">50.00%</div>', result["html"].read_text())
 
     def test_n_base_threshold_is_explicit(self):
         self.config.quick_test_max_n_base_rate = 0

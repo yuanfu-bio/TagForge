@@ -98,10 +98,10 @@ class CoreTests(unittest.TestCase):
             with gzip.open(output, "rt", encoding="utf-8") as handle:
                 self.assertEqual(handle.read().splitlines()[1], "PB1\tCB1\t1\t9\t2\t10\t0.9")
             with gzip.open(dirs["matrix"] / "sample.cb_pb_counts.tsv.gz", "rt", encoding="utf-8") as handle:
-                self.assertEqual(handle.read().splitlines(), ["CB\tpb_count", "CB1\t1"])
+                self.assertEqual(handle.read().splitlines(), ["CB\tpb_count", "CB1\t2"])
             self.assertEqual(
                 (dirs["matrix"] / "sample.cb_pb_count_distribution.tsv").read_text(encoding="utf-8").splitlines(),
-                ["pb_count\tcb_count", "1\t1"],
+                ["pb_count\tcb_count", "2\t1"],
             )
 
     def test_observed_cb_correction_uses_unique_high_support_parent(self):

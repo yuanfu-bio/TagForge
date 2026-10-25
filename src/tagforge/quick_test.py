@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import time
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +16,7 @@ from .extract import _extract_record, decode_method_payload, decode_segment_payl
 from .fastq import paired_fastq
 from .io_utils import atomic_text, sample_dirs, write_tsv
 from .logging_utils import sample_logger
+from .report_style import _REPORT_CSS, _DARK_CSS, _THEME_JS
 from .umi_correct import deduplicate_umis
 
 
@@ -257,22 +259,98 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
     else:
         read_qc_path.unlink(missing_ok=True)
 
-    segment_html = "".join(
-        f"<tr><td>{html.escape(segment.name)}</td><td>{html.escape(segment.method)}</td>"
-        f"<td>{_rate(segment_counts[segment.name]['extraction_success'], totals['reads']):.1%}</td>"
-        f"<td>{_rate(segment_counts[segment.name]['linker_success'], segment_counts[segment.name]['linker_attempted']):.1%}</td>"
-        f"<td>{segment_counts[segment.name]['method_fixed']}</td></tr>"
-        for segment in config.segments
+    segment_rows = []
+    for segment in config.segments:
+        count = segment_counts[segment.name]
+        linker_rate = (f"{_rate(count['linker_success'], count['linker_attempted']):.1%}"
+                       if count['linker_attempted'] else "\\")
+        final_rate = (f"{_rate(count['barcode_valid'], totals['reads']):.1%}"
+                      if segment.target != "umi" else "\\")
+        segment_rows.append(
+            f"<tr><td>{html.escape(segment.target_name or segment.target)}</td>"
+            f"<td>{html.escape(segment.name)}</td><td>{html.escape(segment.method)}</td>"
+            f"<td>{_rate(count['extraction_success'], totals['reads']):.1%}</td>"
+            f"<td>{linker_rate}</td><td>{final_rate}</td><td>{count['method_fixed']:,}</td></tr>"
+        )
+    feature_counts = feature_top.most_common()
+    feature_total = sum(feature_top.values())
+    feature_rows = "".join(
+        f'<tr><td>{html.escape(name)}</td><td>{count:,}</td>'
+        f'<td>{_rate(count, feature_total):.2%}</td></tr>'
+        for name, count in feature_counts
+    ) or '<tr><td colspan="3" class="sub">No eligible feature reads in this prefix.</td></tr>'
+    top_features = feature_counts[:20]
+    # Escape HTML delimiters as well as JSON quotes for annotation-derived names.
+    feature_data = json.dumps({
+        "names": [name for name, _ in top_features],
+        "counts": [count for _, count in top_features],
+    }).replace("<", "\\u003c")
+    duplication = 100 * _rate(valid_reads - molecules, valid_reads)
+    details = [
+        ("QC status", qc_status.title()),
+        ("Eligible reads", f"{valid_reads:,}"),
+        ("N-base Ratio", f"{n_base_rate:.2%}"),
+    ]
+    if min_valid is not None:
+        details.append(("Minimum valid ratio", f"{min_valid:.1%}"))
+    if max_n is not None:
+        details.append(("Maximum N-base ratio", f"{max_n:.2%}"))
+    for read_name, lengths in (("R1", r1_lengths), ("R2", r2_lengths)):
+        shortest, longest = min(lengths), max(lengths)
+        length_summary = (
+            f"{shortest} bp" if shortest == longest else
+            f"{shortest}–{longest} bp (most common: {lengths.most_common(1)[0][0]} bp)"
+        )
+        details.append((f"{read_name} read length", length_summary))
+    details.extend([
+        ("Elapsed time", f"{elapsed:,.2f} s"),
+        ("Speed", f"{totals['reads'] / elapsed:,.0f} reads/s"),
+        ("TagForge version", __version__),
+    ])
+    detail_rows = "".join(f"<tr><td>{html.escape(label)}</td><td>{html.escape(value)}</td></tr>"
+                          for label, value in details)
+    warning_html = (
+        '<section class="panel"><h2>Warnings</h2><ul>'
+        + "".join(f"<li>{html.escape(failure)}</li>" for failure in failures)
+        + '</ul></section>'
+    ) if failures else ""
+    feature_plot = (
+        f"const featureData={feature_data};"
+        "Plotly.newPlot('features',[{type:'bar',orientation:'h',x:featureData.counts,"
+        "y:featureData.names,marker:{color:'#0f766e'},"
+        "hovertemplate:'%{y}<br>%{x:,} eligible reads<extra></extra>'}],"
+        "{autosize:true,yaxis:{autorange:'reversed',automargin:true},"
+        "xaxis:{title:'Eligible reads',gridcolor:'#e2e8f0',rangemode:'tozero'},"
+        "margin:{l:60,r:30,t:16,b:50},paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',"
+        "font:{family:'Arial',color:'#172033'}},{responsive:true});"
+    ) if top_features else ""
+    chart_content = ('<div id="features" style="height:520px"></div>' if top_features else
+                     '<p class="sub">No eligible feature reads in this prefix.</p>')
+    quick_css = (
+        '.quick-report .cards{grid-template-columns:repeat(3,minmax(0,1fr))}'
+        '.quick-report .report-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,480px),1fr))}'
+        '.quick-report .table-wrap{overflow:auto}'
+        '@media(max-width:600px){.quick-report{padding:20px}.quick-report h1{overflow-wrap:anywhere}'
+        '.quick-report .cards .card{padding:12px}'
+        '.quick-report .cards .value{font-size:clamp(18px,5vw,24px)}}'
     )
-    page = f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge quick test · {html.escape(sample_name)}</title><style>
-body{{margin:0;background:#07111f;color:#e5edf8;font:15px Arial,sans-serif}}main{{max-width:1100px;margin:auto;padding:36px}}.cards{{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}}.card,.panel{{background:#0f1d30;border:1px solid #24344d;border-radius:14px;padding:18px}}.value{{font-size:26px;color:#5eead4;font-weight:700}}.panel{{margin-top:18px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:9px;text-align:left;border-bottom:1px solid #24344d}}</style></head><body><main>
-<p>TAGFORGE {__version__} / QUICK TEST</p><h1>{html.escape(sample_name)}</h1>
-<p>QC status: {qc_status}. Leading-read prefix diagnostic; not a random population sample.</p>
-<p>Duplication: {100 * _rate(valid_reads - molecules, valid_reads):.2f}% of eligible reads beyond one read per detected molecule. TSV rates use fractions (0–1); duplication uses percent (0–100).</p>
-<p>{html.escape('; '.join(failures))}</p><div class="cards">
-<div class="card"><span>Reads</span><div class="value">{totals['reads']:,}</div></div><div class="card"><span>Valid</span><div class="value">{_rate(valid_reads, totals['reads']):.1%}</div></div><div class="card"><span>Molecules</span><div class="value">{molecules:,}</div></div><div class="card"><span>Speed</span><div class="value">{totals['reads']/elapsed:,.0f}/s</div></div></div>
-<section class="panel"><h2>Segment QC</h2><table><tr><th>Segment</th><th>Mode</th><th>Extracted</th><th>Linker success</th><th>Fixed reads</th></tr>{segment_html}</table></section>
-<section class="panel"><h2>Top features</h2><table>{''.join(f'<tr><td>{html.escape(k)}</td><td>{v}</td></tr>' for k,v in feature_top.most_common(10))}</table></section>
+    page = f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TagForge quick test · {html.escape(sample_name)}</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{_REPORT_CSS}{_DARK_CSS}{quick_css}</style></head><body><main class="quick-report">
+<button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / QUICK TEST</p><h1>{html.escape(sample_name)}</h1>
+<p class="sub">Leading-read prefix diagnostic; not a random population sample. All metrics below describe the examined prefix.</p>
+<div class="cards">
+<div class="card"><div class="sub">Reads Examined</div><div class="value">{totals['reads']:,}</div></div>
+<div class="card"><div class="sub">Features</div><div class="value">{len(feature_top):,}</div></div>
+<div class="card"><div class="sub">Valid Ratio</div><div class="value">{valid_rate:.1%}</div></div>
+<div class="card"><div class="sub">Molecules</div><div class="value">{molecules:,}</div></div>
+<div class="card"><div class="sub">{html.escape(config.target_name('barcode1'))}</div><div class="value">{len(barcode1_top):,}</div></div>
+<div class="card"><div class="sub">Duplication</div><div class="value">{duplication:.2f}%</div></div></div>
+{warning_html}
+<div class="report-grid"><section class="panel"><h2>Segment QC</h2><div class="table-wrap"><table><tr><th>Barcode</th><th>Segment</th><th>Mode</th><th>Extracted</th><th>Linker</th><th>Final</th><th>Fixed Reads</th></tr>{''.join(segment_rows)}</table></div></section>
+<section class="panel"><h2>Quick Test Details</h2><table><tr><th>Metric</th><th>Value</th></tr>{detail_rows}</table></section></div>
+<div class="report-grid"><section class="panel"><h2>Top 20 Feature</h2>{chart_content}</section>
+<section class="panel"><h2>Feature Counts</h2><div class="scroll-window"><table><tr><th>Feature</th><th>Eligible Reads</th><th>Ratio</th></tr>{feature_rows}</table></div></section></div>
+<script>{_THEME_JS}document.querySelector('.theme').onclick=function(){{toggleTheme(this,{"['features']" if top_features else "[]"})}};{feature_plot}</script>
 </main></body></html>'''
     with atomic_text(html_path) as handle:
         handle.write(page)

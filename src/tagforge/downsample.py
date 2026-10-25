@@ -7,6 +7,7 @@ import html
 import json
 import multiprocessing
 import math
+import os
 import random
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -176,13 +177,12 @@ def _write_saturation_html(path: Path, sample_name: str, rows: list[dict]):
         (row for row in rows if float(row["downsample_ratio"]) == 1.0),
         max(rows, key=lambda row: float(row["downsample_ratio"]), default=None),
     )
-    label = html.escape(sample_name)
-    if full_depth is not None:
-        label += (
-            f"<br>Saturation: {float(full_depth['sequencing_saturation']):.2f}%"
-            f"<br>Non-singleton molecule fraction: {float(full_depth['non_singleton_molecule_fraction']):.2f}%"
-        )
-    sample_label = json.dumps(label)
+    title = json.dumps(f"<b>{html.escape(sample_name)}</b>")
+    subtitle = json.dumps(
+        f'<span style="color:#5963f5">Saturation {float(full_depth["sequencing_saturation"]):.2f}%</span>'
+        f'<span style="color:#9ca3af">  |  </span>'
+        f'<span style="color:#e44c39">Non-singleton Molecule Fraction {float(full_depth["non_singleton_molecule_fraction"]):.2f}%</span>'
+    ) if full_depth is not None else '""'
     page = f'''<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{html.escape(sample_name)}</title>
@@ -193,23 +193,105 @@ def _write_saturation_html(path: Path, sample_name: str, rows: list[dict]):
 const data = {json.dumps(payload)};
 Plotly.newPlot('saturation', [
   {{x:data.ratios,y:data.saturation,name:'Saturation',mode:'lines',yaxis:'y3',line:{{color:'#5963f5',width:3}}}},
-  {{x:data.ratios,y:data.non_singleton,name:'Non-singleton molecule fraction',mode:'lines',yaxis:'y3',line:{{color:'#e44c39',width:3}}}},
+  {{x:data.ratios,y:data.non_singleton,name:'Non-singleton Molecule Fraction',mode:'lines',yaxis:'y3',line:{{color:'#e44c39',width:3}}}},
   {{x:data.ratios,y:data.umi_types,name:'UMI Types',mode:'lines',yaxis:'y2',line:{{color:'#37c58d',width:3}}}},
   {{x:data.ratios,y:data.singletons,name:'UMI detected once',mode:'lines',yaxis:'y',line:{{color:'#9c59f5',width:3}}}}
 ], {{
   template:'plotly_white',
   height:540,
   font:{{family:'Arial'}},
-  annotations:[{{text:{sample_label},xref:'paper',yref:'paper',x:0.02,y:0.98,xanchor:'left',yanchor:'top',align:'left',showarrow:false,font:{{family:'Arial',size:16}}}}],
-  legend:{{orientation:'h',x:0.5,xanchor:'center',y:-0.12}},
+  annotations:[
+    {{text:{title},xref:'paper',yref:'paper',x:0,y:1.13,xanchor:'left',yanchor:'bottom',showarrow:false,font:{{family:'Arial',size:16,color:'#172033'}}}},
+    {{text:{subtitle},xref:'paper',yref:'paper',x:0,y:1.075,xanchor:'left',yanchor:'bottom',showarrow:false,font:{{family:'Arial',size:11}}}}
+  ],
+  margin:{{l:58,r:58,t:75,b:90}},
+  legend:{{orientation:'h',entrywidthmode:'fraction',entrywidth:0.5,font:{{size:10}},x:0.5,xanchor:'center',y:-0.12}},
   xaxis:{{title:'Downsample Ratio'}},
-  yaxis:{{title:'UMI detected once',domain:[0.04,0.48],rangemode:'tozero',titlefont:{{color:'#9c59f5'}},tickfont:{{color:'#9c59f5'}}}},
-  yaxis2:{{title:'UMI Types',overlaying:'y',side:'right',domain:[0.04,0.48],rangemode:'tozero',titlefont:{{color:'#37c58d'}},tickfont:{{color:'#37c58d'}}}},
+  yaxis:{{title:'UMI detected once',domain:[0.04,0.48],rangemode:'tozero',titlefont:{{color:'#9c59f5'}},tickfont:{{color:'#9c59f5'}},showline:true,linecolor:'#9c59f5',linewidth:1.5}},
+  yaxis2:{{title:'UMI Types',overlaying:'y',side:'right',domain:[0.04,0.48],rangemode:'tozero',titlefont:{{color:'#37c58d'}},tickfont:{{color:'#37c58d'}},showline:true,linecolor:'#37c58d',linewidth:1.5}},
   yaxis3:{{title:'Saturation / non-singleton (%)',domain:[0.56,1],range:[0,100]}}
 }}, {{responsive:true,displayModeBar:false,displaylogo:false}});
 </script></body></html>'''
     with atomic_text(path) as handle:
         handle.write(page)
+
+
+FONT_DIR = Path(os.environ.get("TAGFORGE_FONT_DIR", "/data/project/yanhuixu/yfu/01_source/fonts"))
+
+
+def _write_saturation_pdf(path: Path, sample_name: str, rows: list[dict]):
+    from matplotlib import font_manager, rc_context
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+    from matplotlib.ticker import FuncFormatter
+
+    for font in ("Arial.ttf", "Arial Bold.ttf"):
+        if (FONT_DIR / font).is_file():
+            font_manager.fontManager.addfont(str(FONT_DIR / font))
+    ratios = [float(row["downsample_ratio"]) for row in rows]
+    saturation = [float(row["sequencing_saturation"]) for row in rows]
+    non_singleton = [float(row["non_singleton_molecule_fraction"]) for row in rows]
+    umi_types = [float(row["umi_types"]) for row in rows]
+    singletons = [float(row["umi_detected_once"]) for row in rows]
+    colors = {"sat": "#5963f5", "ns": "#e44c39", "types": "#37c58d", "once": "#9c59f5"}
+    with rc_context({"font.family": ["Arial", "DejaVu Sans"], "pdf.fonttype": 42, "axes.unicode_minus": False}):
+        fig = Figure(figsize=(5.2, 5.6))
+        FigureCanvasAgg(fig)
+        kilo = FuncFormatter(lambda v, _: f"{v / 1000:g}k" if v >= 1000 else f"{v:g}")
+        top, bottom = fig.subplots(2, 1, gridspec_kw={"height_ratios": [1, 1], "hspace": 0.28})
+        top.plot(ratios, saturation, color=colors["sat"], lw=2, label="Saturation")
+        top.plot(ratios, non_singleton, color=colors["ns"], lw=2, label="Non-singleton Molecule Fraction")
+        top.set_ylim(0, 100)
+        top.set_ylabel("Saturation / non-singleton (%)")
+        bottom.plot(ratios, singletons, color=colors["once"], lw=2, label="UMI detected once")
+        bottom.set_ylabel("UMI detected once", color=colors["once"])
+        bottom.tick_params(axis="y", colors=colors["once"])
+        bottom.set_ylim(bottom=0)
+        twin = bottom.twinx()
+        twin.plot(ratios, umi_types, color=colors["types"], lw=2, label="UMI Types")
+        twin.set_ylabel("UMI Types", color=colors["types"])
+        twin.tick_params(axis="y", colors=colors["types"])
+        twin.set_ylim(bottom=0)
+        bottom.set_xlabel("Downsample Ratio")
+        bottom.yaxis.set_major_formatter(kilo)
+        twin.yaxis.set_major_formatter(kilo)
+        top.spines["right"].set_visible(False)
+        bottom.spines["left"].set_color(colors["once"])
+        bottom.spines["right"].set_visible(False)
+        twin.spines["right"].set_color(colors["types"])
+        twin.spines["left"].set_visible(False)
+        for axis in (top, bottom, twin):
+            axis.spines["top"].set_visible(False)
+            if axis is not twin:
+                axis.grid(color="#e5e7eb", lw=0.6)
+                axis.set_axisbelow(True)
+            if axis is not top:
+                axis.set_xlim(0, max(ratios, default=1))
+        top.set_xlim(0, max(ratios, default=1))
+        handles = top.get_legend_handles_labels()[0] + bottom.get_legend_handles_labels()[0] + twin.get_legend_handles_labels()[0]
+        labels = top.get_legend_handles_labels()[1] + bottom.get_legend_handles_labels()[1] + twin.get_legend_handles_labels()[1]
+        order = [0, 3, 1, 2]  # matplotlib fills columns first: rows read Sat | NS / Types | Once
+        fig.legend([handles[i] for i in order], [labels[i] for i in order], loc="lower center", ncol=2,
+                   frameon=False, fontsize=8, bbox_to_anchor=(0.5, 0.005))
+        full_depth = next((r for r in rows if float(r["downsample_ratio"]) == 1.0),
+                          max(rows, key=lambda r: float(r["downsample_ratio"]), default=None))
+        fig.text(0.02, 0.975, sample_name, ha="left", va="top", fontsize=13, fontweight="bold")
+        if full_depth is not None:
+            renderer = fig.canvas.get_renderer()
+            x = 0.02
+            for text, color in ((f"Saturation {float(full_depth['sequencing_saturation']):.2f}%", colors["sat"]),
+                                ("|", "#9ca3af"),
+                                (f"Non-singleton Molecule Fraction {float(full_depth['non_singleton_molecule_fraction']):.2f}%", colors["ns"])):
+                label = fig.text(x, 0.935, text, ha="left", va="top", fontsize=9, color=color)
+                x = label.get_window_extent(renderer).transformed(fig.transFigure.inverted()).x1 + 0.015
+        fig.subplots_adjust(left=0.15, right=0.85, top=0.88, bottom=0.17)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(str(path) + ".tmp")
+        try:
+            fig.savefig(tmp, format="pdf")
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 def downsample_sample(config: TagForgeConfig, sample_name: str):
@@ -219,6 +301,7 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
     source = resolve_table(source, source.with_name(source.name.replace(".parquet", ".tsv.gz")))
     metrics_path = dirs["downsample"] / f"{sample_name}.downsample_metrics.tsv"
     html_path = dirs["downsample"] / f"{sample_name}.downsample.html"
+    pdf_path = dirs["downsample"] / f"{sample_name}.downsample.pdf"
     progress_path = dirs["logs"] / f"{sample_name}.progress.json"
     optimal_parquet = dirs["detail"] / f"{sample_name}.optimal_saturation_molecule_detail.parquet"
     barcode1_col = config.target_name("barcode1")
@@ -333,6 +416,7 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
                        **dict(zip(("expected_reads", "expected_molecules", "expected_singletons"), expected_counts(counts, ratio)))})
     write_tsv(dirs["downsample"] / f"{sample_name}.downsample_curve.tsv", list(curves[0]), curves)
     _write_saturation_html(html_path, sample_name, curve_rows(metric_rows))
+    _write_saturation_pdf(pdf_path, sample_name, curve_rows(metric_rows))
     optimal = choose_selection(metric_rows)
     ratio = float(optimal["downsample_ratio"])
     owned = []
@@ -389,4 +473,4 @@ def downsample_sample(config: TagForgeConfig, sample_name: str):
         optimal["reads_sampled"], time.monotonic() - started,
     )
     return [metrics_path, dirs["downsample"] / f"{sample_name}.downsample_curve.tsv",
-            dirs["downsample"] / f"{sample_name}.selection.json", html_path], optimal
+            dirs["downsample"] / f"{sample_name}.selection.json", html_path, pdf_path], optimal

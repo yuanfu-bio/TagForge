@@ -134,8 +134,8 @@ class WorkflowTests(unittest.TestCase):
                         self.assertNotIn("Downsample not run.", page)
                         self.assertNotIn("Not run. Counts use full-depth molecules.", page)
                     else:
-                        self.assertEqual(len(primary), 1)
-                        self.assertTrue(primary[0].exists())
+                        self.assertEqual(primary, [])
+                        self.assertNotIn("Main results", page)
                 rows = workbook_tables(root / "06_report/example.report.xlsx")["Results"]
                 self.assertEqual(rows[1][1], library)
                 self.assertEqual(Path(rows[1][2]).name, filename)
@@ -150,7 +150,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse((dirs["downsample"] / "example.selection.json").exists())
         self.assertEqual(sum(int(row["molecule_count"]) for row in open_records(dirs["matrix"] / "example.raw_molecule_pairs.parquet")), 6)
         html = (dirs["report"] / "example.report.html").read_text()
-        self.assertIn("Not run. Counts use full-depth molecules", html)
+        self.assertNotIn("Not run. Counts use full-depth molecules", html)
         self.assertNotIn('class="sub">Selected downsample ratio', html)
         self.assertEqual(_completed_summary_samples(self.config), ["example"])
         with self.assertRaisesRegex(ConfigError, "downsample.enabled"):
@@ -311,7 +311,28 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse((dirs["matrix"] / "example.optimal_matrix_summary.json").exists())
         payload = json.loads((dirs["matrix"] / "example.pb_cb_summary.json").read_text())
         self.assertEqual(payload["supporting_reads"], 9)
-        self.assertIn("read support", (dirs["report"] / "example.report.html").read_text())
+        page = (dirs["report"] / "example.report.html").read_text()
+        for expected in ("Barcode Validation", "PB Assignment Outcomes", "Multi-CB PB Pass Rate"):
+            self.assertIn(expected, page)
+        self.assertNotIn("Molecule Retention", page)
+        self.assertNotIn("PBs per CB", page)
+        self.assertNotIn("Mapping Summary", page)
+        total_pbs = len({row[self.config.target_name("barcode1")] for row in
+                         open_tsv(dirs["matrix"] / "example.pb_cb_mapping.tsv.gz")})
+        self.assertEqual(payload["total_pbs"], total_pbs)
+        rate = payload["retained_pbs"] / total_pbs
+        self.assertIn(f'<div class="value">{total_pbs:,}</div>', page)
+        self.assertIn(f'{rate:.1%}', page)
+        overview = workbook_tables(dirs["report"] / "example.report.xlsx")["Overview"]
+        self.assertEqual(int(overview[1][overview[0].index("Total PBs")]), total_pbs)
+        self.assertAlmostEqual(float(overview[1][overview[0].index("PB pass rate")]), 100 * rate)
+        batch_page = (self.config.output_dir / "00_report/TagForge_batch_report.html").read_text()
+        self.assertIn("PB Assignment Outcomes", batch_page)
+        self.assertNotIn("Molecule Retention", batch_page)
+        self.assertTrue((dirs['report'] / 'example.dominance_qc.json').exists())
+        self.assertIn('Dominance Distribution', workbook_tables(dirs['report'] / 'example.report.xlsx'))
+        self.assertEqual(payload['dominance_qc']['retained_pbs'], payload['retained_pbs'])
+        self.assertNotIn("Main results", page)
         self.assertEqual(_completed_summary_samples(self.config), ["example"])
         self.assertTrue((self.config.output_dir / "00_report/TagForge_batch_report.xlsx").is_file())
         self.assertTrue((self.config.output_dir / "00_report/TagForge_batch_report.html").is_file())
