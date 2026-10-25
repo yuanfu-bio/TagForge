@@ -15,7 +15,9 @@ use the version declared in `tagforge.__version__`.
   per-segment extraction and linker rates.
 - Redesign the downsample saturation figure (title/subtitle annotations,
   coloured axes) and write a matching `{sample}.downsample.pdf` alongside the
-  HTML; set `TAGFORGE_FONT_DIR` to supply Arial.
+  HTML; set `TAGFORGE_FONT_DIR` to supply Arial (no built-in default path).
+- Warn at config load when `performance.umi_duckdb_memory_mb` or
+  `matrix_memory_mb` exceeds host memory; remove dead code in batch reports.
 
 - Fix IUPAC linker wildcards (including `N`) in exact and mismatch-tolerant
   searches; use Cutadapt's real substitution counts for pair scoring and

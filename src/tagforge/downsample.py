@@ -214,7 +214,7 @@ Plotly.newPlot('saturation', [
         handle.write(page)
 
 
-FONT_DIR = Path(os.environ.get("TAGFORGE_FONT_DIR", "/data/project/yanhuixu/yfu/01_source/fonts"))
+FONT_DIR = Path(os.environ["TAGFORGE_FONT_DIR"]) if os.environ.get("TAGFORGE_FONT_DIR") else None
 
 
 def _write_saturation_pdf(path: Path, sample_name: str, rows: list[dict]):
@@ -224,7 +224,7 @@ def _write_saturation_pdf(path: Path, sample_name: str, rows: list[dict]):
     from matplotlib.ticker import FuncFormatter
 
     for font in ("Arial.ttf", "Arial Bold.ttf"):
-        if (FONT_DIR / font).is_file():
+        if FONT_DIR is not None and (FONT_DIR / font).is_file():
             font_manager.fontManager.addfont(str(FONT_DIR / font))
     ratios = [float(row["downsample_ratio"]) for row in rows]
     saturation = [float(row["sequencing_saturation"]) for row in rows]

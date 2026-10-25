@@ -1,15 +1,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import math
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import simple_yaml
 
 
+logger = logging.getLogger(__name__)
+
+
 class ConfigError(ValueError):
     pass
+
+
+def _warn_if_memory_exceeds_host(**limits):
+    try:
+        host_mb = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // (1024 * 1024)
+    except (AttributeError, OSError, ValueError):
+        return
+    for name, value in limits.items():
+        if value > host_mb:
+            logger.warning("performance.%s=%s MB exceeds host memory (%s MB); lower it to avoid out-of-memory failures",
+                           name, value, host_mb)
 
 
 def validate_parquet_compression(value):
@@ -735,6 +751,7 @@ def load_config(config_path: str | Path, check_files: bool = True) -> TagForgeCo
     matrix_memory_mb = _integer(perf.get("matrix_memory_mb", 16384), "performance.matrix_memory_mb")
     if matrix_memory_mb < 32:
         raise ConfigError("performance.matrix_memory_mb must be >= 32")
+    _warn_if_memory_exceeds_host(umi_duckdb_memory_mb=umi_duckdb_memory_mb, matrix_memory_mb=matrix_memory_mb)
     config = TagForgeConfig(
         path=path, workdir=workdir, output_dir=output_dir, samples=samples, segments=segments,
         fb_info=fb_info, barcode2_sequence_only=barcode2_sequence_only,

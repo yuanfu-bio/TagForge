@@ -241,7 +241,7 @@ def _assignment_sheets(config, samples):
 
 
 def _assignment_panel(qc):
-    total, multi = qc["total_pbs"], qc["multi_cb_pbs"]
+    total = qc["total_pbs"]
     pass_text = f"{qc['retained_pbs'] / total:.1%}" if total else "N/A"
     threshold = f"{100 * qc['dominance_threshold']:g}%"
     return f'''<section class="panel"><h2>PB Assignment</h2><p class="sub">After CB correction, assign each PB to its leading CB only when that CB accounts for &ge;{threshold} of supporting reads; otherwise leave the PB unassigned.</p>
@@ -557,7 +557,6 @@ def report_sample(config: TagForgeConfig, sample_name: str):
     optimal = point_records[0] if point_records else {}
     optimal_saturation = float(optimal.get("sequencing_saturation", 0) or 0)
     max_non_singleton = float(optimal.get("max_non_singleton_molecule_fraction", 0) or 0)
-    optimal_ratio = float(optimal.get("optimal_downsample_ratio", 0) or 0)
     feature_total = sum(features.values())
     flags = []
     if valid_rate < 0.5: flags.append("Combined barcode/UMI valid rate is below 50%.")
@@ -612,11 +611,6 @@ def report_sample(config: TagForgeConfig, sample_name: str):
     return [xlsx, report_html]
 
 
-def _cluster_feature_order(names, bulk, samples):
-    totals={s:sum(bulk[s].values()) or 1 for s in samples}
-    return sorted(names,key=lambda f: tuple(round(bulk[s].get(f,0)/totals[s],6) for s in samples))
-
-
 def batch_report(config, sample_names):
     if config.pb_cb_enabled:
         return _pair_mapping_report(config, sample_names)
@@ -647,7 +641,6 @@ def batch_report(config, sample_names):
         rows.append((sample,_number(combined.get('total_reads')),float(combined.get('valid_rate',0) or 0),sum(feats.values()),b1_count,len(feats),(float(optimal.get('max_non_singleton_molecule_fraction',0) or 0) if config.downsample_enabled else None),(float(optimal.get('sequencing_saturation',0) or 0) if config.downsample_enabled else None),(float(optimal.get('optimal_downsample_ratio',0) or 0) if config.downsample_enabled else None),[rates.get(s.name,0) for s in segs],annotated_rate))
     names=sorted(set().union(*[set(v) for v in bulk.values()]),key=lambda f:(-sum(bulk[s].get(f,0) for s in sample_names),f))
     raw=[[bulk[s].get(f,0) for s in sample_names] for f in names]; totals=[sum(bulk[s].values()) or 1 for s in sample_names]; ratio=[[v/totals[i]*100 for i,v in enumerate(row)] for row in raw]
-    heat_names=names[:100]; cluster=_cluster_feature_order(heat_names,bulk,sample_names); cluster_raw=[[bulk[s].get(f,0) for s in sample_names] for f in cluster]; cluster_ratio=[[v/totals[i]*100 for i,v in enumerate(row)] for row in cluster_raw]
     over=''.join(
         '<tr><td>'+html.escape(r[0])+'</td><td>'+f'{r[1]:,}'+'</td><td>'+f'{r[2]:.1%}'+'</td>'
         + ''.join('<td>'+f'{rate:.1%}'+'</td>' for rate in r[9])
