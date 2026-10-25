@@ -6,6 +6,12 @@ use the version declared in `tagforge.__version__`.
 
 ## Unreleased
 
+- Fix IUPAC linker wildcards (including `N`) in exact and mismatch-tolerant
+  searches; use Cutadapt's real substitution counts for pair scoring and
+  mismatch budgets. Preserve overlapping hits and the ordinary ACGT fast path.
+  Invalidate extraction checkpoints from earlier builds and their downstream
+  results so failed wildcard extractions cannot be silently reused.
+
 - Run PB–CB `pair-map` aggregation in DuckDB instead of row-wise SQLite upserts;
   output tables are unchanged.
 

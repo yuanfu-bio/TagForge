@@ -42,7 +42,7 @@ An explicit segment `target` must agree with its containing role.
   full-feature annotation QC remains available.
 - PB–CB requires `barcode2.sequence_only: true`, correction disabled for CB
   segments, and no CB whitelist. Dominance uses read support and retains support
-  strictly greater than the configured threshold. Alias resolution merges
+  at least the configured threshold. Alias resolution merges
   duplicate final PB–CB–UMI molecules and sums their supporting reads.
   Alias parents must have strictly more reads than their children, including
   when `parent_child_ratio: 1`; equal-support CBs cannot alias each other.

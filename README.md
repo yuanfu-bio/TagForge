@@ -135,6 +135,13 @@ are relative to the project root. Fixed segment positions are **0-based**:
 concatenated in configuration order. `methods: [linker, fixed]` tries linker
 extraction first, then fixed coordinates on the original read when needed.
 
+Linkers support Cutadapt's IUPAC adapter wildcards, including `N` for any base;
+wildcard matches do not consume `linker.max_mismatch`. For example,
+`right_linker: NAAAAAAAA` includes a one-base spacer before poly(A), keeping
+that spacer outside the extracted barcode. With repeated linker hits,
+`linker_strategy: length_position` selects the configured barcode length and
+then proximity to its 0-based `start`.
+
 See the [configuration template](configs/config.example.yaml) for a complete
 working example. Validate your configuration, then run all discovered samples:
 

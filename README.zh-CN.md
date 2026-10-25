@@ -110,6 +110,8 @@ my-project/
 
 在 `00_config/config.yaml` 中设置 `project.workdir: ..` 后，输入与输出路径均相对于项目根目录解析。固定位置提取采用 **从 0 开始的坐标**：`start: 6, length: 8` 提取区间 `[6, 14)`。多个片段按配置顺序拼接；`methods: [linker, fixed]` 优先尝试 linker 提取，失败后按原始 read 的固定坐标提取。
 
+Linker 支持 Cutadapt 的 IUPAC 通配符，例如 `N` 匹配任意碱基，通配匹配不消耗 `linker.max_mismatch` 的错配额度。`right_linker: NAAAAAAAA` 可将 poly(A) 前的 1 bp 间隔纳入右侧 linker，避免把它计入条码。出现多个 linker 匹配时，`linker_strategy: length_position` 按配置的条码长度和距 0-based `start` 的距离选择配对。
+
 完整配置可参考[配置模板](configs/config.example.yaml)。验证配置后，运行所有已发现的样本：
 
 ```bash
