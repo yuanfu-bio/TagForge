@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .columnar import open_records, resolve_table
 from .config import TagForgeConfig
+from .dominance_qc import DominanceQC
 from .io_utils import atomic_text, open_tsv, sample_dirs
 
 
@@ -98,7 +99,7 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
 
     For ``library.type: pb-cb``, also select the sole CB for each PB using
     read support after UMI deduplication. A PB is retained only if its leading
-    CB has support strictly greater than the configured dominance threshold.
+    CB has support at least the configured dominance threshold.
     """
     dirs = sample_dirs(config.output_dir, sample_name)
     source = resolve_table(dirs["detail"] / f"{sample_name}.molecule_detail.parquet",
@@ -178,25 +179,29 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
                     SELECT pb, cb, molecule_count, reads_count,
                            SUM(molecule_count) OVER (PARTITION BY pb) AS total_molecule_count,
                            SUM(reads_count) OVER (PARTITION BY pb) AS total_reads_count,
+                           COUNT(*) OVER (PARTITION BY pb) AS cb_count,
                            ROW_NUMBER() OVER (
                                PARTITION BY pb ORDER BY reads_count DESC, cb ASC
                            ) AS rn
                     FROM resolved_mapping
                 )
                 SELECT pb, cb, molecule_count, reads_count, total_molecule_count,
-                       total_reads_count, CAST(reads_count AS DOUBLE) / total_reads_count AS dominant_ratio
+                       total_reads_count, CAST(reads_count AS DOUBLE) / total_reads_count AS dominant_ratio, cb_count
                 FROM ranked WHERE rn = 1 ORDER BY pb
             """
             selected = [tuple(int(v) if i in (2, 3, 4, 5) else v for i, v in enumerate(row))
                         for row in con.execute(ranked).fetchall()]
-            retained = [row for row in selected if row[6] > threshold]
+            qc = DominanceQC(threshold)
+            for row in selected:
+                qc.add(row[7], row[5], row[3])
+            retained = [row for row in selected if row[6] >= threshold]
             with atomic_text(map_output, config.compression_level) as handle:
                 writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
                 writer.writerow([
                     pb_column, config.target_name("barcode2"), "molecule_count", "reads_count",
                     "total_molecule_count", "total_reads_count", "dominant_ratio",
                 ])
-                writer.writerows(retained)
+                writer.writerows(row[:7] for row in retained)
             con.register("retained_arrow", pa.table({
                 "pb": pa.array([row[0] for row in retained], type=pa.string()),
                 "cb": pa.array([row[1] for row in retained], type=pa.string())}))
@@ -225,10 +230,11 @@ def pair_mapping_sample(config: TagForgeConfig, sample_name: str):
             payload = {"schema": 1, "sample": sample_name, "dominance_basis": "read_support",
                        "dominance_threshold": threshold, "raw_molecules": raw_molecules,
                        "resolved_molecules": resolved_molecules, "supporting_reads": raw_reads,
+                       "total_pbs": len(selected),
                        "retained_pbs": len(retained), "retained_cbs": len(cb_counts),
                        "retained_molecules": sum(row[2] for row in retained),
                        "retained_supporting_reads": sum(row[3] for row in retained),
-                       "cb_aliases": len(aliases)}
+                       "cb_aliases": len(aliases), "dominance_qc": qc.payload()}
             with atomic_text(dirs["matrix"] / f"{sample_name}.pb_cb_summary.json") as handle:
                 json.dump(payload, handle, sort_keys=True)
             return map_output

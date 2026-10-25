@@ -22,8 +22,8 @@ MANIFEST_SCHEMA = 1
 # Bump only the affected stage when its counting logic or output contract changes.
 STAGE_VERSIONS = {step: 1 for step in (
     "extract", "correct", "dedup", "matrix", "pair-map", "downsample", "report")}
-STAGE_VERSIONS.update(extract=2, correct=4, dedup=3, downsample=10, matrix=2, report=4, **{"pair-map": 3})
-STAGE_VERSIONS["report"] = 7
+STAGE_VERSIONS.update(extract=3, correct=4, dedup=3, downsample=10, matrix=2, report=4, **{"pair-map": 3})
+STAGE_VERSIONS["report"] = 17
 STAGE_NUMBERS = {"extract": "01", "correct": "02", "dedup": "03", "matrix": "04",
                  "pair-map": "04", "downsample": "05", "report": "06"}
 
@@ -128,8 +128,9 @@ def expected_outputs(config, sample, step):
             + [d["matrix"] / f"{sample}.pb_cb_summary.json"]
             if config.pb_cb_enabled else []),
         "downsample": [d["downsample"] / f"{sample}.{suffix}" for suffix in (
-            "downsample_metrics.tsv", "downsample_curve.tsv", "downsample.html", "selection.json")],
-        "report": [d["report"] / f"{sample}.report.xlsx", d["report"] / f"{sample}.report.html"],
+            "downsample_metrics.tsv", "downsample_curve.tsv", "downsample.html", "downsample.pdf", "selection.json")],
+        "report": [d["report"] / f"{sample}.report.xlsx", d["report"] / f"{sample}.report.html"]
+                  + ([d["report"] / f"{sample}.dominance_qc.json"] if config.pb_cb_enabled else []),
     }[step]
     if step == "downsample":
         selection = _json(d["downsample"] / f"{sample}.selection.json")

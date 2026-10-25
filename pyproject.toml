@@ -20,6 +20,7 @@ dependencies = [
   "umi-tools>=1.1.5",
   "duckdb>=1.1",
   "pyarrow>=16",
+  "matplotlib>=3.7",
 ]
 
 [project.optional-dependencies]

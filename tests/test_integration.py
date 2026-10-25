@@ -87,6 +87,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(progress["stage"], "report")
         self.assertEqual(progress["status"], "completed")
         self.assertTrue((sample / "05_downsample/example.downsample.html").is_file())
+        self.assertEqual((sample / "05_downsample/example.downsample.pdf").read_bytes()[:5], b"%PDF-")
         stats = (sample / "01_extracted/example.extraction_stats.tsv").read_text(encoding="utf-8")
         self.assertIn("CELL\tCELL\tR1\tlinker_fixed\t9\t9\t8\t1", stats)
         valid_rows = list(open_records(sample / "02_corrected/example.valid_reads.parquet"))

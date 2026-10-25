@@ -10,6 +10,7 @@ dependencies:
   - pyyaml>=6
   - duckdb>=1.1
   - pyarrow>=16
+  - matplotlib>=3.7
   - pip
   - setuptools>=68
   - wheel

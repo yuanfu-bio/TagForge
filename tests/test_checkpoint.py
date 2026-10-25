@@ -92,6 +92,15 @@ class CheckpointTests(unittest.TestCase):
         self.assertTrue(stage_current(self.config, "example", "extract"))
         self.assertFalse(stage_current(self.config, "example", "correct"))
 
+    def test_pre_wildcard_fix_checkpoints_are_invalidated(self):
+        from tagforge.checkpoint import STAGE_VERSIONS, stage_current
+        with patch.dict(STAGE_VERSIONS, {"extract": 2}):
+            self.run_through("correct")
+            self.assertTrue(stage_current(self.config, "example", "extract"))
+            self.assertTrue(stage_current(self.config, "example", "correct"))
+        self.assertFalse(stage_current(self.config, "example", "extract"))
+        self.assertFalse(stage_current(self.config, "example", "correct"))
+
     def test_coordinate_change_invalidates_extraction_and_downstream(self):
         from tagforge.checkpoint import stage_current
         self.run_through("matrix")

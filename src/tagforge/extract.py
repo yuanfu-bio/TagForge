@@ -4,6 +4,7 @@ import csv
 import gzip
 import json
 import os
+import re
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from collections import Counter, deque
 from dataclasses import dataclass, replace
@@ -52,9 +53,9 @@ def _cutadapt_adapter(linker: str, max_mismatch: int):
         ) from exc
     return AnywhereAdapter(
         sequence=linker,
-        # A rate is portable across Cutadapt releases. Full-length overlap and
-        # disabled indels make this equivalent to max_mismatch substitutions.
-        max_errors=max_mismatch / len(linker),
+        # Cutadapt converts absolute counts >= 1 using the non-N length.
+        # Dividing by the full length would underspend the budget for wildcards.
+        max_errors=max_mismatch,
         min_overlap=len(linker),
         indels=False,
     )
@@ -66,11 +67,21 @@ def _find_linker(sequence: str, linker: str, max_mismatch: int, start: int = 0) 
     return None if match is None else start + match.rstart
 
 
+@lru_cache(maxsize=512)
+def _exact_linker_pattern(linker: str):
+    # Use literal positions to prefilter wildcard candidates efficiently. Leave
+    # degenerate positions unrestricted; Cutadapt decides the actual matches.
+    sequence = _cutadapt_adapter(linker, 0).sequence
+    pattern = "".join("[TU]" if base == "T" else base if base in "ACG" else "."
+                      for base in sequence)
+    # Lookahead retains overlapping occurrences, including within poly(A).
+    return re.compile("(?=" + pattern + ")", re.IGNORECASE)
+
+
 def _find_all_linkers(sequence: str, linker: str, max_mismatch: int) -> list[int]:
-    """Enumerate all full-length substitution-only matches, verified by Cutadapt."""
-    if max_mismatch == 0:
-        # Exact, possibly overlapping occurrences: identical to the windowed
-        # Cutadapt verification below, without a Python loop over every offset.
+    """Enumerate full-length substitution-only matches with adapter wildcards."""
+    if max_mismatch == 0 and set(linker) <= set("ACGT"):
+        # Preserve the fast path for ordinary exact ACGT linkers.
         positions = []
         found = sequence.find(linker)
         while found != -1:
@@ -80,9 +91,14 @@ def _find_all_linkers(sequence: str, linker: str, max_mismatch: int) -> list[int
     adapter = _cutadapt_adapter(linker, max_mismatch)
     positions = []
     width = len(linker)
-    for position in range(0, len(sequence) - width + 1):
+    candidates = (
+        (match.start() for match in _exact_linker_pattern(linker).finditer(sequence))
+        if max_mismatch == 0 else range(0, len(sequence) - width + 1)
+    )
+    for position in candidates:
         window = sequence[position:position + width]
-        if hamming(window, linker) > max_mismatch:
+        # Literal Hamming distance is not valid for an IUPAC adapter.
+        if not adapter.adapter_wildcards and hamming(window, linker) > max_mismatch:
             continue
         match = adapter.match_to(window)
         if match is not None and match.rstart == 0 and match.rstop == width:
@@ -107,8 +123,14 @@ def _closest_linker_pair(sequence: str, left: str, right: str, max_mismatch: int
             def score(pair):
                 _, left_position, right_position = pair
                 distance = abs(left_position + len(left) - start) if start is not None else 0
-                errors = (hamming(sequence[left_position:left_position + len(left)], left)
-                          + hamming(sequence[right_position:right_position + len(right)], right))
+                errors = 0
+                if max_mismatch:
+                    for position, linker in ((left_position, left), (right_position, right)):
+                        match = _cutadapt_adapter(linker, max_mismatch).match_to(
+                            sequence[position:position + len(linker)])
+                        # Candidate windows were already verified above.
+                        assert match is not None
+                        errors += match.errors
                 return distance, errors
             best_score = min(map(score, candidates))
             best = [pair for pair in candidates if score(pair) == best_score]
