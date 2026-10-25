@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import csv
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
-from .columnar import ParquetFragmentWriter, open_records
-from .config import ConfigError
-from .io_utils import atomic_text, open_tsv, sample_dirs, write_tsv
+from .io_utils import sample_dirs, write_tsv
 
 
 def filter_pi_seq_molecules(config, sample_name: str, source: Path):

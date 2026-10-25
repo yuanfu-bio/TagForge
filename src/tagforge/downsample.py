@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 from collections import Counter
 import hashlib
 import html
@@ -15,9 +14,8 @@ from pathlib import Path
 
 from .config import TagForgeConfig
 from .columnar import ParquetFragmentWriter, open_records, resolve_table, record_batches
-from .io_utils import atomic_text, open_tsv, sample_dirs, write_progress, tsv_batches, write_tsv
+from .io_utils import atomic_text, sample_dirs, write_progress, write_tsv
 from .logging_utils import sample_logger
-from .matrix import matrix_from_molecules
 from .selected import write_selection
 
 

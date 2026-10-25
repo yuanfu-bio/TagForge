@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import csv
-import gzip
 import json
-import os
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from collections import Counter
@@ -12,14 +10,14 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from itertools import chain
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable
 
 from . import __version__
 from .columnar import (ParquetFragmentWriter, _pa, parquet_files, parquet_size, record_batches,
                        resolve_table, write_parquet_columns)
-from .config import CorrectionConfig, SegmentConfig, TagForgeConfig, ConfigError
+from .config import CorrectionConfig, TagForgeConfig, ConfigError
 from .extract import decode_method_payload, decode_segment_payload, hamming
-from .io_utils import atomic_text, sample_dirs, write_progress, write_json, tsv_batches, write_tsv
+from .io_utils import atomic_text, sample_dirs, write_progress, write_json, write_tsv
 from .logging_utils import sample_logger
 
 

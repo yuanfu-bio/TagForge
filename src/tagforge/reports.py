@@ -5,21 +5,19 @@ import fcntl
 import gzip
 import html
 import json
-import math
 from collections import Counter
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
-from . import __version__
 from .barcode_correct import load_fb_annotation, load_whitelist_names, correction_qc_path, load_correction_stats
 from .columnar import open_records, is_parquet_table, resolve_table
 from .config import TagForgeConfig, ConfigError
-from .io_utils import atomic_text, batch_report_dir, open_tsv, sample_dirs, sample_paths, write_tsv
+from .io_utils import atomic_text, batch_report_dir, open_tsv, sample_dirs, sample_paths
 from .xlsx import write_xlsx
 from .checkpoint import stage_current
 from .selected import selected_summary_path, selection_point
-from .report_style import _REPORT_CSS, _DARK_CSS, _THEME_JS
+from .report_style import REPORT_CSS, DARK_CSS, THEME_JS
 from .downsample import SAMPLING_NOTE
 
 
@@ -383,13 +381,13 @@ def _pair_mapping_sample_html(config, sample_name):
     plots = _assignment_plot_js(qc)
     ids = ["pb-pass-rate", "pb-dominance"] + (["sat"] if sat_js else [])
     return f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge · {html.escape(sample_name)}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{_REPORT_CSS}</style></head><body><main>
-<style>{_DARK_CSS}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / SAMPLE REPORT</p><h1>{html.escape(sample_name)}</h1>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{REPORT_CSS}</style></head><body><main>
+<style>{DARK_CSS}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / SAMPLE REPORT</p><h1>{html.escape(sample_name)}</h1>
 <div class="cards">{cards}</div>
 <div class="report-grid"><section class="panel"><h2>Barcode Validation</h2><table><tr><th>Barcode</th><th>Segment</th><th>Linker</th><th>Final</th></tr>{validation_rows}</table></section>{downsample_panel}</div>
 {_assignment_panel(qc)}
 {warning_html}
-<script>{plots}{sat_js}{_THEME_JS};document.querySelector('.theme').onclick=function(){{toggleTheme(this,{json.dumps(ids)})}};</script></main></body></html>'''
+<script>{plots}{sat_js}{THEME_JS};document.querySelector('.theme').onclick=function(){{toggleTheme(this,{json.dumps(ids)})}};</script></main></body></html>'''
 
 
 _PERCENT_COLUMNS = {"Valid ratio", "Saturation", "Non-singleton molecule fraction",
@@ -455,12 +453,12 @@ def _pair_mapping_batch_html(config, samples, overview):
         ds_panel = '<section class="panel"><h2>Downsample</h2><div id="ds" style="height:400px"></div></section>'
         ds_js, ids = _batch_downsample_js(config, samples), ["pb-pass-rate", "ds"]
     return f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge · Batch report</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{_REPORT_CSS}</style></head><body><main>
-<style>{_DARK_CSS}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / BATCH REPORT</p><h1>PB–CB mapping</h1>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{REPORT_CSS}</style></head><body><main>
+<style>{DARK_CSS}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / BATCH REPORT</p><h1>PB–CB mapping</h1>
 <section class="panel"><h2>Overview</h2><div class="scroll-window" style="height:auto;max-height:520px"><table>{table}</table></div></section>
 {ds_panel}
 <section class="panel"><h2>PB Assignment Outcomes</h2><div id="pb-pass-rate" style="height:{max(250, 60 * len(names) + 120)}px"></div></section>
-<script>{plot}{ds_js}{_THEME_JS};document.querySelector('.theme').onclick=function(){{toggleTheme(this,{json.dumps(ids)})}};</script></main></body></html>'''
+<script>{plot}{ds_js}{THEME_JS};document.querySelector('.theme').onclick=function(){{toggleTheme(this,{json.dumps(ids)})}};</script></main></body></html>'''
 
 
 def _pair_mapping_report(config, samples, sample_name=None):
@@ -602,8 +600,8 @@ def report_sample(config: TagForgeConfig, sample_name: str):
         warning_html = f'<section class="panel"><h2>Warnings</h2><ul>{"".join(f"<li>{html.escape(flag)}</li>" for flag in flags)}</ul>{annotation_warning}</section>'
     selection_cards = f'''<div class="card"><div class="sub">Saturation</div><div class="value">{optimal_saturation:.1f}%</div></div><div class="card"><div class="sub">Non-singleton Molecule Fraction</div><div class="value">{max_non_singleton:.1f}%</div></div>''' if config.downsample_enabled else ''
     page = f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge · {html.escape(sample_name)}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{_REPORT_CSS}</style></head><body><main>
-<style>{_DARK_CSS}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / SAMPLE REPORT</p><h1>{html.escape(sample_name)}</h1><div class="cards">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{REPORT_CSS}</style></head><body><main>
+<style>{DARK_CSS}</style><button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / SAMPLE REPORT</p><h1>{html.escape(sample_name)}</h1><div class="cards">
 <div class="card"><div class="sub">Total Reads</div><div class="value">{int(combined.get('total_reads', 0) or 0):,}</div></div><div class="card"><div class="sub">Features</div><div class="value">{len(features):,}</div></div><div class="card"><div class="sub">Valid Ratio</div><div class="value">{valid_rate:.1%}</div></div><div class="card"><div class="sub">Annotated</div><div class="value">{annotated_rate:.1%}</div></div><div class="card"><div class="sub">Molecules</div><div class="value">{molecule_count:,}</div></div><div class="card"><div class="sub">{html.escape(barcode1_name)}</div><div class="value">{b1_count:,}</div></div>{selection_cards}</div>
 <div class="report-grid"><section class="panel"><h2>Barcode Validation</h2><table><tr><th>Barcode</th><th>Segment</th><th>Linker</th><th>Final</th></tr>{validation_rows}</table></section><section class="panel"><h2>Downsample</h2><div id="sat" style="height:430px" {'hidden' if not config.downsample_enabled else ''}></div></section></div>
 <div class="report-grid"><section class="panel"><h2>Top 20 Feature</h2><div id="features" style="height:520px"></div></section><section class="panel"><h2>Feature Counts</h2><div class="scroll-window"><table><tr><th>Feature</th><th>Counts</th><th>Ratio</th></tr>{feature_table_rows}</table></div></section></div>

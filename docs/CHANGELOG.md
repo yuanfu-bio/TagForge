@@ -6,6 +6,17 @@ use the version declared in `tagforge.__version__`.
 
 ## Unreleased
 
+- Add PB dominance QC (`dominance_qc.py`): per-PB read support after observed
+  CB correction classifies PBs as single-CB, resolved or unresolved multi-CB,
+  and reports pass rates and removed relations; legacy mappings are diagnosed
+  by the same rules. The batch PB–CB report shows these outcomes.
+- Move shared report CSS and theme script into `report_style.py` for the sample,
+  batch and quick-test HTML reports; the quick-test report now lists
+  per-segment extraction and linker rates.
+- Redesign the downsample saturation figure (title/subtitle annotations,
+  coloured axes) and write a matching `{sample}.downsample.pdf` alongside the
+  HTML; set `TAGFORGE_FONT_DIR` to supply Arial.
+
 - Fix IUPAC linker wildcards (including `N`) in exact and mismatch-tolerant
   searches; use Cutadapt's real substitution counts for pair scoring and
   mismatch budgets. Preserve overlapping hits and the ordinary ACGT fast path.

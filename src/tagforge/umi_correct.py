@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import shutil
 import sqlite3
 import subprocess
@@ -14,7 +13,7 @@ from typing import Dict, Iterable, Iterator
 
 from .columnar import ParquetFragmentWriter, open_records, resolve_table
 from .config import ConfigError, TagForgeConfig
-from .io_utils import atomic_text, open_tsv, sample_dirs, write_progress, write_tsv
+from .io_utils import sample_dirs, write_progress
 from .logging_utils import ProgressThrottle, sample_logger
 from .pi_seq import filter_pi_seq_molecules
 

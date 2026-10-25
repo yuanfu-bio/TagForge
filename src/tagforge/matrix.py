@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import gzip
 import json
 import shutil
 import sqlite3
@@ -11,7 +10,7 @@ from pathlib import Path
 from .columnar import open_records, resolve_table
 from .config import TagForgeConfig
 from .dominance_qc import DominanceQC
-from .io_utils import atomic_text, open_tsv, sample_dirs
+from .io_utils import atomic_text, sample_dirs
 
 
 def _observed_cb_aliases(cb_counts, min_parent_reads: int, parent_child_ratio: float):

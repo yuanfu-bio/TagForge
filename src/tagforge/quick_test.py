@@ -16,7 +16,7 @@ from .extract import _extract_record, decode_method_payload, decode_segment_payl
 from .fastq import paired_fastq
 from .io_utils import atomic_text, sample_dirs, write_tsv
 from .logging_utils import sample_logger
-from .report_style import _REPORT_CSS, _DARK_CSS, _THEME_JS
+from .report_style import REPORT_CSS, DARK_CSS, THEME_JS
 from .umi_correct import deduplicate_umis
 
 
@@ -335,7 +335,7 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
         '.quick-report .cards .value{font-size:clamp(18px,5vw,24px)}}'
     )
     page = f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>TagForge quick test · {html.escape(sample_name)}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{_REPORT_CSS}{_DARK_CSS}{quick_css}</style></head><body><main class="quick-report">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{REPORT_CSS}{DARK_CSS}{quick_css}</style></head><body><main class="quick-report">
 <button class="theme icon-button" aria-label="Switch to dark theme" title="Switch to dark theme">☾</button><p class="sub">TAGFORGE / QUICK TEST</p><h1>{html.escape(sample_name)}</h1>
 <p class="sub">Leading-read prefix diagnostic; not a random population sample. All metrics below describe the examined prefix.</p>
 <div class="cards">
@@ -350,7 +350,7 @@ def quick_test_sample(config: TagForgeConfig, sample_name: str, max_reads: int):
 <section class="panel"><h2>Quick Test Details</h2><table><tr><th>Metric</th><th>Value</th></tr>{detail_rows}</table></section></div>
 <div class="report-grid"><section class="panel"><h2>Top 20 Feature</h2>{chart_content}</section>
 <section class="panel"><h2>Feature Counts</h2><div class="scroll-window"><table><tr><th>Feature</th><th>Eligible Reads</th><th>Ratio</th></tr>{feature_rows}</table></div></section></div>
-<script>{_THEME_JS}document.querySelector('.theme').onclick=function(){{toggleTheme(this,{"['features']" if top_features else "[]"})}};{feature_plot}</script>
+<script>{THEME_JS}document.querySelector('.theme').onclick=function(){{toggleTheme(this,{"['features']" if top_features else "[]"})}};{feature_plot}</script>
 </main></body></html>'''
     with atomic_text(html_path) as handle:
         handle.write(page)
