@@ -17,7 +17,7 @@ from .io_utils import atomic_text, batch_report_dir, open_tsv, sample_dirs, samp
 from .xlsx import write_xlsx
 from .checkpoint import stage_current
 from .selected import selected_summary_path, selection_point
-from .report_style import REPORT_CSS, DARK_CSS, THEME_JS
+from .report_style import REPORT_CSS, DARK_CSS, SCROLLBAR_CSS, SCROLLBAR_JS, THEME_JS
 from .downsample import SAMPLING_NOTE
 
 
@@ -31,7 +31,7 @@ def primary_result(config, sample):
 
 
 def _downsample_plot_js(ratios, saturation, non_singleton, umi_types, singletons):
-    return f"""Plotly.newPlot('sat',[{{x:{json.dumps(ratios)},y:{json.dumps(saturation)},name:'Saturation',mode:'lines',yaxis:'y3',line:{{color:'#0f766e',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(non_singleton)},name:'Non-singleton Molecule Fraction',mode:'lines',yaxis:'y3',line:{{color:'#ea580c',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(umi_types)},name:'UMI Types',mode:'lines',yaxis:'y2',line:{{color:'#2563eb',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(singletons)},name:'UMI detected once',mode:'lines',yaxis:'y',line:{{color:'#9333ea',width:3}}}}],{{margin:{{l:60,r:60,t:12,b:95}},paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',font:{{family:'Arial',color:'#172033'}},legend:{{orientation:'h',entrywidthmode:'fraction',entrywidth:0.5,x:0.5,xanchor:'center',y:-0.15}},xaxis:{{title:'Downsample ratio',gridcolor:'#e2e8f0'}},yaxis:{{title:'UMI detected once',domain:[0.05,0.48],gridcolor:'#e2e8f0'}},yaxis2:{{title:'UMI Types',overlaying:'y',side:'right',domain:[0.05,0.48],gridcolor:'#e2e8f0'}},yaxis3:{{title:'',ticksuffix:'%',domain:[0.56,1],range:[0,100],gridcolor:'#e2e8f0'}}}},{{responsive:true}})"""
+    return f"""Plotly.newPlot('sat',[{{x:{json.dumps(ratios)},y:{json.dumps(saturation)},name:'Sequencing saturation',mode:'lines',yaxis:'y3',line:{{color:'#0f766e',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(non_singleton)},name:'Non-singleton molecule fraction',mode:'lines',yaxis:'y3',line:{{color:'#ea580c',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(umi_types)},name:'Unique molecules',mode:'lines',yaxis:'y2',line:{{color:'#2563eb',width:3}}}},{{x:{json.dumps(ratios)},y:{json.dumps(singletons)},name:'Singleton molecules',mode:'lines',yaxis:'y',line:{{color:'#9333ea',width:3}}}}],{{margin:{{l:60,r:60,t:12,b:95}},paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',font:{{family:'Arial',color:'#172033'}},legend:{{orientation:'h',entrywidthmode:'fraction',entrywidth:0.5,x:0.5,xanchor:'center',y:-0.15}},xaxis:{{title:'Downsample ratio',tickformat:'.0%',gridcolor:'#e2e8f0'}},yaxis:{{title:'Singleton molecules',domain:[0.05,0.48],gridcolor:'#e2e8f0'}},yaxis2:{{title:'Unique molecules',overlaying:'y',side:'right',domain:[0.05,0.48],gridcolor:'#e2e8f0'}},yaxis3:{{title:'',ticksuffix:'%',domain:[0.56,1],range:[0,100],gridcolor:'#e2e8f0'}}}},{{responsive:true}})"""
 
 
 def _result_rows(config, samples):
@@ -119,6 +119,43 @@ def _barcode2_names(barcode2_segments):
         if getattr(segment, "whitelist", None):
             names.update(load_whitelist_names(segment.whitelist))
     return names
+
+
+def _segment_report_label(name):
+    return {"CB": "Cell barcode", "FB": "Feature barcode", "BULK": "Bulk barcode"}.get(
+        str(name).upper(), str(name))
+
+
+def _barcode1_count_label(name):
+    label = _segment_report_label(name)
+    return f"Unique {label.lower()}s" if label != str(name) else f"Unique {label} barcodes"
+
+
+def _batch_overview_headers(segments, barcode1_name):
+    headers = [("Sample", "Sample identifier"), ("Reads", "Total reads"),
+               ("Valid %", "Valid read rate: reads with valid barcodes, annotated FB, and valid UMIs")]
+    short_segment = {"CB": "CB", "FB": "FB", "BULK": "Bulk"}
+    for segment in segments:
+        name = str(segment.name)
+        label = _segment_report_label(name)
+        headers.append((f"{short_segment.get(name.upper(), name)} %", f"{label} valid rate (%)"))
+    barcode1 = str(barcode1_name)
+    if barcode1.upper() == "CB":
+        barcode_count_header = ("CBs", "Unique cell barcodes")
+    elif barcode1.upper() == "BULK":
+        barcode_count_header = ("Bulk tags", "Unique BULK barcodes")
+    else:
+        barcode_count_header = ("Barcodes", _barcode1_count_label(barcode1))
+    headers.extend([
+        ("UMIs", "Unique molecules"), barcode_count_header,
+        ("Features", "Detected features"),
+        ("FB anno %", "Feature barcode annotation rate (%)"),
+        ("DS ratio %", "Selected downsample ratio (%)"),
+        ("Sat. %", "Sequencing saturation (%)"),
+        ("Multi-read %", "Non-singleton molecule fraction (%)")])
+    return "".join(
+        f'<th title="{html.escape(title)}">{html.escape(label)}</th>'
+        for label, title in headers)
 
 
 def _annotation_rate_and_details(config, sample, stats, barcode2_segments):
@@ -404,8 +441,9 @@ def _batch_downsample_js(config, samples):
                           "non_singleton": [float(r["non_singleton_molecule_fraction"]) for r in metrics],
                           "umi_types": [float(r["umi_types"]) for r in metrics],
                           "singletons": [float(r["umi_detected_once"]) for r in metrics]}
-    panels = [("saturation", "Saturation (%)", [0, 100]), ("non_singleton", "Non-singleton Molecule Fraction (%)", [0, 100]),
-              ("umi_types", "UMI Types", None), ("singletons", "UMI detected once", None)]
+    panels = [("saturation", "Sequencing saturation (%)", [0, 100]),
+              ("non_singleton", "Non-singleton molecule fraction (%)", [0, 100]),
+              ("umi_types", "Unique molecules", None), ("singletons", "Singleton molecules", None)]
     domains = [[0, .21], [.26, .47], [.53, .74], [.79, 1]]
     colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A", "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52"]
     traces, layout = [], {"margin": {"l": 55, "r": 25, "t": 52, "b": 90}, "font": {"family": "Arial"},
@@ -417,7 +455,7 @@ def _batch_downsample_js(config, samples):
             traces.append({"x": data["x"], "y": data[key], "name": name, "mode": "lines", "legendgroup": name,
                            "showlegend": i == 0, "line": {"width": 3, "color": colors[j % len(colors)]},
                            "xaxis": "x" + suffix, "yaxis": "y" + suffix})
-        layout["xaxis" + suffix] = {"domain": domains[i], "anchor": "y" + suffix, "title": "Downsample ratio", "gridcolor": "#e2e8f0"}
+        layout["xaxis" + suffix] = {"domain": domains[i], "anchor": "y" + suffix, "title": "Downsample ratio", "tickformat": ".0%", "gridcolor": "#e2e8f0"}
         layout["yaxis" + suffix] = {"domain": [0, 1], "anchor": "x" + suffix, "gridcolor": "#e2e8f0",
                                     **({"range": axis_range} if axis_range else {})}
         layout["annotations"].append({"text": title, "x": sum(domains[i]) / 2, "y": 1.1, "xref": "paper",
@@ -450,7 +488,7 @@ def _pair_mapping_batch_html(config, samples, overview):
     ds_panel = ds_js = ""
     ids = ["pb-pass-rate"]
     if getattr(config, "downsample_enabled", False):
-        ds_panel = '<section class="panel"><h2>Downsample</h2><div id="ds" style="height:400px"></div></section>'
+        ds_panel = '<section class="panel"><h2>Downsample metrics</h2><div id="ds" style="height:400px"></div></section>'
         ds_js, ids = _batch_downsample_js(config, samples), ["pb-pass-rate", "ds"]
     return f'''<!doctype html><html><head><meta charset="utf-8"><title>TagForge · Batch report</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>{REPORT_CSS}</style></head><body><main>
@@ -667,7 +705,9 @@ def batch_report(config, sample_names):
         pi_metrics_table = '<div class="overview"><table><tr><th>Sample</th><th>MP Ratio</th><th>Dominant MP Ratio</th><th>Removed Ratio</th><th>≥2 Molecule PB Ratio</th><th>≥2 Protein PB Ratio</th></tr>' + ''.join('<tr><td>{}</td><td>{:.1%}</td><td>{:.1%}</td><td>{:.1%}</td><td>{:.1f}%</td><td>{:.1f}%</td></tr>'.format(html.escape(row[0]), *row[1:]) for row in pi_matrix_rows[1:]) + '</table></div>'
         pi_batch_html = """<section class="panel"><h2>PI-seq Matrix</h2>""" + pi_metrics_table + """<div class="grid"><div id="pi-batch-molecules" style="height:360px"></div><div id="pi-batch-proteins" style="height:360px"></div></div></section><script>const piBatch=""" + json.dumps(pi_pb_distributions) + """;const piLabels=""" + json.dumps(labels) + """;const piColors=['#636EFA','#EF553B','#00CC96','#AB63FA','#FFA15A','#19D3F3','#FF6692','#B6E880'];const piSamples=Object.keys(piBatch);const drawPiBatch=(id,field,title)=>Plotly.newPlot(id,piLabels.map((label,index)=>({type:'bar',orientation:'h',y:piSamples,x:piSamples.map(sample=>piBatch[sample][field][index]),name:label,marker:{color:piColors[index]},hovertemplate:'%{y}<br>Count: '+label+'<br>PB ratio: %{x:.2f}%<extra></extra>'})),{barmode:'stack',margin:{l:120,r:20,t:40,b:70},title,font:{family:'Arial',color:'#172033'},paper_bgcolor:'#ffffff',plot_bgcolor:'#ffffff',xaxis:{title:'PB ratio (%)',range:[0,100]},legend:{orientation:'h',x:0,xanchor:'left',y:-.25,traceorder:'normal'}},{responsive:true});drawPiBatch('pi-batch-molecules','Molecules','Molecules per PB');drawPiBatch('pi-batch-proteins','Proteins','Proteins per PB');</script>"""
 
-    page=f'''<!doctype html><html><head><script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>body{{margin:0;background:#f5f7fb;color:#172033;font:15px Arial,sans-serif}}main{{max-width:1200px;margin:auto;padding:36px}}h1{{margin:0 0 8px}}h2{{margin:0 0 14px}}.panel{{background:#fff;border:1px solid #dce3ee;border-radius:14px;padding:18px;margin:16px 0}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:18px;margin:20px 0}}.mini-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}}.shared-legend{{display:flex;flex-wrap:wrap;justify-content:center;gap:14px;margin-top:14px}}.legend-item{{display:inline-flex;align-items:center;gap:6px}}.legend-swatch{{width:12px;height:12px;border-radius:50%}}.grid .panel{{margin:0}}table{{border-collapse:collapse;width:100%}}th,td{{padding:9px;border-bottom:1px solid #e6ebf2;text-align:left;white-space:nowrap}}th{{background:#f8fafc;color:#475569}}.controls{{display:flex;align-items:center;gap:8px;margin:0 0 14px}}.scroll{{height:520px;overflow:auto;border:1px solid #e6ebf2;border-radius:8px}}#ds{{margin-top:4px}}.overview{{max-height:300px;overflow:auto;border:1px solid #e6ebf2;border-radius:8px}}button{{font:inherit;padding:6px 10px;border:1px solid #94a3b8;border-radius:8px;background:#fff;cursor:pointer}}button.active{{background:#0f766e;color:#fff;border-color:#0f766e}}.theme{{float:right;width:36px;height:36px;padding:0;font-size:19px}}body.dark{{background:#07111f;color:#e5edf8}}body.dark .panel{{background:#0f1d30;border-color:#24344d}}body.dark .sub{{color:#94a3b8}}body.dark th{{background:#17263b;color:#93c5fd}}body.dark td,body.dark th,body.dark .scroll,body.dark .overview{{border-color:#24344d}}body.dark button{{background:#0f1d30;color:#e5edf8;border-color:#64748b}}body.dark button.active{{background:#0f766e}}</style></head><body><main><button class="theme">☾</button><p class="sub">TAGFORGE / BATCH RESULTS</p><h1>{len(sample_names)} samples</h1><section class="panel"><h2>Overview</h2><div class="overview"><table><tr><th>Sample</th><th>Total Reads</th><th>Valid</th>{''.join('<th>'+html.escape(s.name)+'</th>' for s in segs)}<th>Molecules</th><th>{html.escape(b1)}</th><th>Features</th><th>Annotated</th><th>Selected DS</th><th>Sat.</th><th>Non-singleton (%)</th></tr>{over}</table></div></section><section class="panel"><h2>Downsample</h2><div id="ds" style="height:400px"></div></section><div class="grid"><section class="panel"><h2>Feature Counts</h2><div class="controls"><button class="active mode" data-c="raw">Counts</button><button class="mode" data-c="ratio">Percent</button></div><div class="scroll"><table><thead><tr><th>Feature</th>{''.join('<th>'+html.escape(s)+'</th>' for s in sample_names)}<th id="aggregate-header">Total</th></tr></thead><tbody id="tbody">{counts}</tbody></table></div></section><section class="panel"><h2>Feature Heatmap</h2><div id="hm" style="height:600px"></div></section></div>{batch_warning_html}{pi_batch_html}<script>const curves={json.dumps(downsample_curves)};const plotlyColors=['#636EFA','#EF553B','#00CC96','#AB63FA','#FFA15A','#19D3F3','#FF6692','#B6E880','#FF97FF','#FECB52'];const curveEntries=Object.entries(curves);const metrics=[['saturation','Saturation (%)',[0,100],'x','y'],['non_singleton','Non-singleton Molecule Fraction (%)',[0,100],'x2','y2'],['umi_types','UMI Types',null,'x3','y3'],['singletons','UMI detected once',null,'x4','y4']];const dsTraces=metrics.flatMap(([key,title,range,xaxis,yaxis],metricIndex)=>curveEntries.map(([name,data],sampleIndex)=>({{x:data.x,y:data[key],name,mode:'lines',legendgroup:name,showlegend:metricIndex===0,line:{{width:3,color:plotlyColors[sampleIndex%plotlyColors.length]}},xaxis,yaxis}})));Plotly.newPlot('ds',dsTraces,{{margin:{{l:45,r:20,t:52,b:90}},legend:{{orientation:'h',y:-.18,groupclick:'togglegroup'}},font:{{family:'Arial'}},paper_bgcolor:'#fff',plot_bgcolor:'#fff',annotations:[{{text:'Saturation (%)',x:.105,y:1.12,xref:'paper',yref:'paper',showarrow:false}},{{text:'Non-singleton Molecule Fraction (%)',x:.365,y:1.12,xref:'paper',yref:'paper',showarrow:false}},{{text:'UMI Types',x:.635,y:1.12,xref:'paper',yref:'paper',showarrow:false}},{{text:'UMI detected once',x:.905,y:1.12,xref:'paper',yref:'paper',showarrow:false}}],xaxis:{{domain:[0,.21],anchor:'y'}},yaxis:{{domain:[0,1],anchor:'x',range:[0,100]}},xaxis2:{{domain:[.26,.47],anchor:'y2'}},yaxis2:{{domain:[0,1],anchor:'x2',range:[0,100]}},xaxis3:{{domain:[.53,.74],anchor:'y3'}},yaxis3:{{domain:[0,1],anchor:'x3'}},xaxis4:{{domain:[.79,1],anchor:'y4'}},yaxis4:{{domain:[0,1],anchor:'x4'}}}},{{responsive:true}});const downsampleLayout=()=>{{const compact=document.getElementById('ds').clientWidth<1000;const domains=compact?[[0,.45],[.55,1],[0,.45],[.55,1]]:[[0,.21],[.26,.47],[.53,.74],[.79,1]];const yDomains=compact?[[.58,1],[.58,1],[0,.39],[0,.39]]:[[0,1],[0,1],[0,1],[0,1]];const titleY=compact?[1.04,1.04,.43,.43]:[1.04,1.04,1.04,1.04];const titles=['Saturation (%)','Non-singleton Molecule Fraction (%)','UMI Types','UMI detected once'];const layout={{margin:{{l:55,r:25,t:compact?52:52,b:90}},annotations:titles.map((text,index)=>({{text,x:(domains[index][0]+domains[index][1])/2,y:titleY[index],xref:'paper',yref:'paper',xanchor:'center',yanchor:'bottom',showarrow:false,font:{{size:12}}}})),xaxis:{{domain:domains[0],anchor:'y',rangemode:'tozero'}},yaxis:{{domain:yDomains[0],anchor:'x',range:[0,100]}},xaxis2:{{domain:domains[1],anchor:'y2',rangemode:'tozero'}},yaxis2:{{domain:yDomains[1],anchor:'x2',range:[0,100]}},xaxis3:{{domain:domains[2],anchor:'y3',rangemode:'tozero'}},yaxis3:{{domain:yDomains[2],anchor:'x3',rangemode:'tozero'}},xaxis4:{{domain:domains[3],anchor:'y4',rangemode:'tozero'}},yaxis4:{{domain:yDomains[3],anchor:'x4',rangemode:'tozero'}}}};Plotly.relayout('ds',layout);}};downsampleLayout();window.addEventListener('resize',downsampleLayout);const n={json.dumps(names)},s={json.dumps(sample_names)},r={json.dumps(raw)},p={json.dumps(ratio)};let mode='raw';const hm=document.getElementById('hm');const draw=()=>{{const values=mode==='ratio'?p:r;Plotly.react(hm,[{{type:'heatmap',z:values.slice(0,100),x:s,y:n.slice(0,100),colorscale:[[0,'#ecfdf5'],[.5,'#14b8a6'],[1,'#0f766e']],colorbar:{{title:'Value',thickness:10,len:.55}},hovertemplate:mode==='ratio'?'%{{y}}<br>%{{x}}: %{{z:.2f}}%<extra></extra>':'%{{y}}<br>%{{x}}: %{{z:,}}<extra></extra>'}}],{{margin:{{l:140,r:50,t:76,b:50}},xaxis:{{side:'top'}},yaxis:{{autorange:'reversed'}},font:{{family:'Arial'}},paper_bgcolor:'#fff',plot_bgcolor:'#fff'}},{{responsive:true}})}};draw();document.querySelectorAll('[data-c]').forEach(button=>button.onclick=()=>{{mode=button.dataset.c;const ratioMode=mode==='ratio',values=ratioMode?p:r;document.getElementById('aggregate-header').textContent=ratioMode?'Average':'Total';document.getElementById('tbody').innerHTML=n.map((name,index)=>{{const row=values[index],aggregate=row.reduce((sum,value)=>sum+value,0)/(ratioMode?row.length:1);return '<tr><td>'+name+'</td>'+row.map(value=>'<td>'+(ratioMode?value.toFixed(2)+'%':value.toLocaleString())+'</td>').join('')+'<td>'+(ratioMode?aggregate.toFixed(2)+'%':aggregate.toLocaleString())+'</td></tr>'}}).join('');document.querySelectorAll('[data-c]').forEach(item=>item.classList.toggle('active',item===button));draw()}});const toggleBatchTheme=button=>{{const dark=document.body.classList.toggle('dark');button.textContent=dark?'☀':'☾';const surface=dark?'#0f1d30':'#ffffff',font=dark?'#cbd5e1':'#172033',grid=dark?'#24344d':'#e2e8f0';const theme={{'paper_bgcolor':surface,'plot_bgcolor':surface,'font.color':font,'font.family':'Arial','xaxis.gridcolor':grid,'yaxis.gridcolor':grid}};['ds','hm','pi-batch-molecules','pi-batch-proteins'].forEach(id=>{{if(document.getElementById(id))Plotly.relayout(id,theme)}})}};document.querySelector('.theme').onclick=function(){{toggleBatchTheme(this)}};</script></main></body></html>'''
+    page=f'''<!doctype html><html><head><script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script><style>body{{margin:0;background:#f5f7fb;color:#172033;font:15px Arial,sans-serif}}main{{max-width:1200px;margin:auto;padding:36px}}h1{{margin:0 0 8px}}h2{{margin:0 0 14px}}.panel{{background:#fff;border:1px solid #dce3ee;border-radius:14px;padding:18px;margin:16px 0}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:18px;margin:20px 0}}.mini-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}}.shared-legend{{display:flex;flex-wrap:wrap;justify-content:center;gap:14px;margin-top:14px}}.legend-item{{display:inline-flex;align-items:center;gap:6px}}.legend-swatch{{width:12px;height:12px;border-radius:50%}}.grid .panel{{margin:0}}table{{border-collapse:collapse;width:100%}}th,td{{padding:9px;border-bottom:1px solid #e6ebf2;text-align:left;white-space:nowrap}}th{{background:#f8fafc;color:#475569}}.controls{{display:flex;align-items:center;gap:8px;margin:0 0 14px}}.scroll{{height:520px;overflow:auto;border:1px solid #e6ebf2;border-radius:8px}}#ds{{margin-top:4px}}.overview{{border:1px solid #e6ebf2;border-radius:8px}}.overview table{{width:100%;table-layout:fixed;font-size:13px}}.overview th,.overview td{{padding:7px 5px}}.overview th:first-child,.overview td:first-child{{width:210px;text-align:left}}.overview th:not(:first-child),.overview td:not(:first-child){{text-align:right}}@media(max-width:900px){{.overview{{overflow-x:auto}}.overview table{{min-width:1050px}}}}button{{font:inherit;padding:6px 10px;border:1px solid #94a3b8;border-radius:8px;background:#fff;cursor:pointer}}button.active{{background:#0f766e;color:#fff;border-color:#0f766e}}.theme{{float:right;width:36px;height:36px;padding:0;font-size:19px}}body.dark{{background:#07111f;color:#e5edf8}}body.dark .panel{{background:#0f1d30;border-color:#24344d}}body.dark .sub{{color:#94a3b8}}body.dark th{{background:#17263b;color:#93c5fd}}body.dark td,body.dark th,body.dark .scroll,body.dark .overview{{border-color:#24344d}}body.dark button{{background:#0f1d30;color:#e5edf8;border-color:#64748b}}body.dark button.active{{background:#0f766e}}</style></head><body><main><button class="theme">☾</button><p class="sub">TAGFORGE / BATCH RESULTS</p><h1>{len(sample_names)} sample{'s' if len(sample_names) != 1 else ''}</h1><section class="panel"><h2>Overview</h2><div class="overview"><table><tr>{_batch_overview_headers(segs,b1)}</tr>{over}</table></div></section><section class="panel"><h2>Downsample metrics</h2><div id="ds" style="height:400px"></div></section><div class="grid"><section class="panel"><h2>Feature abundance</h2><div class="controls"><button class="active mode" data-c="raw">Molecule counts</button><button class="mode" data-c="ratio">Share (%)</button></div><div class="scroll"><table><thead><tr><th>Feature</th>{''.join('<th>'+html.escape(s)+'</th>' for s in sample_names)}<th id="aggregate-header">Total molecules</th></tr></thead><tbody id="tbody">{counts}</tbody></table></div></section><section class="panel"><h2>Feature abundance heatmap</h2><div id="hm" style="height:600px"></div></section></div>{batch_warning_html}{pi_batch_html}<script>const curves={json.dumps(downsample_curves)};const plotlyColors=['#636EFA','#EF553B','#00CC96','#AB63FA','#FFA15A','#19D3F3','#FF6692','#B6E880','#FF97FF','#FECB52'];const curveEntries=Object.entries(curves);const metrics=[['saturation','Sequencing saturation (%)',[0,100],'x','y'],['non_singleton','Non-singleton molecule fraction (%)',[0,100],'x2','y2'],['umi_types','Unique molecules',null,'x3','y3'],['singletons','Singleton molecules',null,'x4','y4']];const dsTraces=metrics.flatMap(([key,title,range,xaxis,yaxis],metricIndex)=>curveEntries.map(([name,data],sampleIndex)=>({{x:data.x,y:data[key],name,mode:'lines',legendgroup:name,showlegend:metricIndex===0,line:{{width:3,color:plotlyColors[sampleIndex%plotlyColors.length]}},xaxis,yaxis}})));Plotly.newPlot('ds',dsTraces,{{margin:{{l:45,r:20,t:52,b:90}},legend:{{orientation:'h',y:-.18,groupclick:'togglegroup'}},font:{{family:'Arial'}},paper_bgcolor:'#fff',plot_bgcolor:'#fff',annotations:[{{text:'Sequencing saturation (%)',x:.105,y:1.12,xref:'paper',yref:'paper',showarrow:false}},{{text:'Non-singleton molecule fraction (%)',x:.365,y:1.12,xref:'paper',yref:'paper',showarrow:false}},{{text:'Unique molecules',x:.635,y:1.12,xref:'paper',yref:'paper',showarrow:false}},{{text:'Singleton molecules',x:.905,y:1.12,xref:'paper',yref:'paper',showarrow:false}}],xaxis:{{domain:[0,.21],anchor:'y',tickformat:'.0%'}},yaxis:{{domain:[0,1],anchor:'x',range:[0,100]}},xaxis2:{{domain:[.26,.47],anchor:'y2',tickformat:'.0%'}},yaxis2:{{domain:[0,1],anchor:'x2',range:[0,100]}},xaxis3:{{domain:[.53,.74],anchor:'y3',tickformat:'.0%'}},yaxis3:{{domain:[0,1],anchor:'x3'}},xaxis4:{{domain:[.79,1],anchor:'y4',tickformat:'.0%'}},yaxis4:{{domain:[0,1],anchor:'x4'}}}},{{responsive:true}});const downsampleLayout=()=>{{const compact=document.getElementById('ds').clientWidth<1000;const domains=compact?[[0,.45],[.55,1],[0,.45],[.55,1]]:[[0,.21],[.26,.47],[.53,.74],[.79,1]];const yDomains=compact?[[.58,1],[.58,1],[0,.39],[0,.39]]:[[0,1],[0,1],[0,1],[0,1]];const titleY=compact?[1.04,1.04,.43,.43]:[1.04,1.04,1.04,1.04];const titles=['Sequencing saturation (%)','Non-singleton molecule fraction (%)','Unique molecules','Singleton molecules'];const layout={{margin:{{l:55,r:25,t:compact?52:52,b:90}},annotations:titles.map((text,index)=>({{text,x:(domains[index][0]+domains[index][1])/2,y:titleY[index],xref:'paper',yref:'paper',xanchor:'center',yanchor:'bottom',showarrow:false,font:{{size:12}}}})),xaxis:{{domain:domains[0],anchor:'y',rangemode:'tozero',tickformat:'.0%'}},yaxis:{{domain:yDomains[0],anchor:'x',range:[0,100]}},xaxis2:{{domain:domains[1],anchor:'y2',rangemode:'tozero',tickformat:'.0%'}},yaxis2:{{domain:yDomains[1],anchor:'x2',range:[0,100]}},xaxis3:{{domain:domains[2],anchor:'y3',rangemode:'tozero',tickformat:'.0%'}},yaxis3:{{domain:yDomains[2],anchor:'x3',rangemode:'tozero'}},xaxis4:{{domain:domains[3],anchor:'y4',rangemode:'tozero',tickformat:'.0%'}},yaxis4:{{domain:yDomains[3],anchor:'x4',rangemode:'tozero'}}}};Plotly.relayout('ds',layout);}};downsampleLayout();window.addEventListener('resize',downsampleLayout);const n={json.dumps(names)},s={json.dumps(sample_names)},r={json.dumps(raw)},p={json.dumps(ratio)};let mode='raw';const hm=document.getElementById('hm');const draw=()=>{{const values=mode==='ratio'?p:r;Plotly.react(hm,[{{type:'heatmap',z:values.slice(0,100),x:s,y:n.slice(0,100),colorscale:[[0,'#ecfdf5'],[.5,'#14b8a6'],[1,'#0f766e']],colorbar:{{title:mode==='ratio'?'Share (%)':'Molecule count',thickness:10,len:.55}},hovertemplate:mode==='ratio'?'%{{y}}<br>%{{x}}: %{{z:.2f}}%<extra></extra>':'%{{y}}<br>%{{x}}: %{{z:,}}<extra></extra>'}}],{{margin:{{l:140,r:50,t:76,b:50}},xaxis:{{side:'top'}},yaxis:{{autorange:'reversed'}},font:{{family:'Arial'}},paper_bgcolor:'#fff',plot_bgcolor:'#fff'}},{{responsive:true}})}};draw();document.querySelectorAll('[data-c]').forEach(button=>button.onclick=()=>{{mode=button.dataset.c;const ratioMode=mode==='ratio',values=ratioMode?p:r;document.getElementById('aggregate-header').textContent=ratioMode?'Mean share (%)':'Total molecules';document.getElementById('tbody').innerHTML=n.map((name,index)=>{{const row=values[index],aggregate=row.reduce((sum,value)=>sum+value,0)/(ratioMode?row.length:1);return '<tr><td>'+name+'</td>'+row.map(value=>'<td>'+(ratioMode?value.toFixed(2)+'%':value.toLocaleString())+'</td>').join('')+'<td>'+(ratioMode?aggregate.toFixed(2)+'%':aggregate.toLocaleString())+'</td></tr>'}}).join('');document.querySelectorAll('[data-c]').forEach(item=>item.classList.toggle('active',item===button));draw()}});const toggleBatchTheme=button=>{{const dark=document.body.classList.toggle('dark');button.textContent=dark?'☀':'☾';const surface=dark?'#0f1d30':'#ffffff',font=dark?'#cbd5e1':'#172033',grid=dark?'#24344d':'#e2e8f0';const theme={{'paper_bgcolor':surface,'plot_bgcolor':surface,'font.color':font,'font.family':'Arial','xaxis.gridcolor':grid,'yaxis.gridcolor':grid}};['ds','hm','pi-batch-molecules','pi-batch-proteins'].forEach(id=>{{if(document.getElementById(id))Plotly.relayout(id,theme)}})}};document.querySelector('.theme').onclick=function(){{toggleBatchTheme(this)}};</script></main></body></html>'''
+    page = page.replace('</style>', SCROLLBAR_CSS + '</style>', 1)
+    page = page.replace('</body>', '<script>' + SCROLLBAR_JS + '</script></body>', 1)
     with atomic_text(hp) as h:h.write(page)
     return [xlsx,hp]
 
@@ -786,10 +826,10 @@ def _completed_summary_samples(config: TagForgeConfig):
 
 
 def _downsample_table(config, samples):
-    rows = [["Sample", "Status", "Selected ratio",
-             "Supporting reads", "Molecules", "Singleton molecules",
-             "Saturation (%)",
-             "Non-singleton molecule fraction (%)", "Criterion"]]
+    rows = [["Sample", "Status", "Selected downsample ratio (fraction)",
+             "Sampled reads", "Unique molecules", "Singleton molecules (one read)",
+             "Sequencing saturation (%)",
+             "Non-singleton molecule fraction (%)", "Selection criterion"]]
     points = {}
     for sample in samples:
         enabled = getattr(config, "downsample_enabled", True)
@@ -828,16 +868,17 @@ def _batch_workbook_sheets(config, samples):
     barcode2_segments = [segment for segment in segments if segment.target == "barcode2"]
     names = _barcode2_names(barcode2_segments)
     pi_seq = getattr(config, "pi_seq_enabled", False)
-    summary = [["Sample", "Reads", "Valid reads", "Valid",
-                *[f"{segment.name} valid" for segment in segments],
-                "Annotated", "Molecules",
-                f"{config.target_name('barcode1')} count", "Features"] + (
+    summary = [["Sample", "Total reads", "Valid reads", "Valid read rate (fraction)",
+                *[f"{_segment_report_label(segment.name)} valid rate (fraction)" for segment in segments],
+                "Feature barcode annotation rate (fraction)", "Unique molecules",
+                _barcode1_count_label(config.target_name("barcode1")), "Detected features"] + (
                     ["MP", "Dominant MP", "Removed",
                      "MP groups", "Retained",
                      "PB >=2 mol", "PB >=2 feat"]
                     if pi_seq else [])]
-    warnings = [["Sample", "Annotated rate (fraction)", "FB not in annotation", "Reads",
-                 "Annotated below 90%"]]
+    warnings = [["Sample", "Feature barcode annotation rate (fraction)",
+                 "Unannotated feature barcode", "Reads carrying unannotated feature barcode",
+                 "Below 90% annotation threshold"]]
     full_counts, selected_counts = {}, {}
     for sample in samples:
         root = config.output_dir / sample
@@ -875,8 +916,8 @@ def _batch_workbook_sheets(config, samples):
     def count_table(counts):
         return [["Sample"] + features] + [[sample] + [counts[sample].get(feature, 0) for feature in features]
                                           for sample in samples]
-    sheets = [("Summary", summary), ("Counts_raw", count_table(full_counts)),
-              ("Counts_final", count_table(selected_counts))]
+    sheets = [("Summary", summary), ("Full-depth molecule counts", count_table(full_counts)),
+              ("Selected molecule counts", count_table(selected_counts))]
     sheets += [("Downsample", downsample), ("Warnings", warnings)]
     sheets.append(("Results", _result_rows(config, samples)))
     return sheets
